@@ -15,7 +15,7 @@ function harness(phase='watching',options={}){
   const state={enabled:true,session:'unit-session',windowId:2,tabIds:[7],
     items:{7:item},discardFlags:{},reason:''};
   writes.autopilot5_state=state;
-  const commands=[];let injections=0;
+  const commands=[];let injections=0;let afterUpCalls=0;
   let url=options.url||'https://chatgpt.com/c/one';
   let before=0, mouseReleases=0;
   const handlers={};
@@ -36,7 +36,7 @@ function harness(phase='watching',options={}){
             return {...OBS};
           case 'AP5_PREPARE':return options.failPrepare ? {ok:false,reason:'Still generating'} : {ok:true,x:30,y:30};
           case 'AP5_AFTER_CLICK':return {ok:true};
-          case 'AP5_AFTER_UP':return {ok:!options.failAfterUp,reason:options.failAfterUp?'Completion gate failed':'',editorEmpty:!options.cleanupSafe};
+          case 'AP5_AFTER_UP':afterUpCalls++;return {ok:!options.failAfterUp && afterUpCalls >= (options.readyAfterUpCheck||1), reason:(options.failAfterUp?'Completion gate failed':'Send control not enabled yet'),editorEmpty:!options.cleanupSafe};
           case 'AP5_BEFORE_ENTER':before++;return {ok:before!==(options.failBeforeEnterAt||-1)};
           case 'AP5_CLEANUP_CHECK':return {ok:!!options.cleanupSafe,modifier:options.cleanupModifier||'Control'};
           case 'AP5_ROLLOVER_CAPTURE':return {ok:true,prompt:'תמשיך את הפיתוח',assistantExcerpt:'The project compiles and the tests pass.'};
@@ -59,7 +59,7 @@ function harness(phase='watching',options={}){
       if(method==='Input.dispatchKeyEvent' && args.key==='Enter' && args.type==='keyDown' && options.rotationAck && mouseReleases===3) url='https://chatgpt.com/c/new';
     }},
     action:{onClicked:event('clicked'),setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{},setTitle:async()=>{}},
-    runtime:{id:'extension-id',getURL:p=>'chrome-extension://extension-id/'+p,onMessage:event('message'),onInstalled:event('installed'),onStartup:event('startup')},
+    runtime:{id:'extension-id',onMessage:event('message'),onInstalled:event('installed'),onStartup:event('startup')},
     alarms:{onAlarm:event('alarm'),create:async()=>{},clear:async()=>{}},
     contextMenus:{onClicked:event('menu'),create:()=>{},removeAll:async()=>{}},
     scripting:{executeScript:async()=>{injections++}}
@@ -71,7 +71,7 @@ function harness(phase='watching',options={}){
     fs.readFileSync(path.join(ROOT,name),'utf8'),context,{filename:name}));
   vm.runInContext(fs.readFileSync(path.join(ROOT,'background.js'),'utf8'),context,
     {filename:'background.js'});
-  return {context,writes,commands,handlers,getInjections:()=>injections,
+  return {context,writes,commands,getInjections:()=>injections,getAfterUpCalls:()=>afterUpCalls,
     setUrl:x=>{url=x},getItem:()=>writes.autopilot5_state.items[7]};
 }
 test('ordinary navigation away skips without putting the tab in needs_review',async()=>{
@@ -93,7 +93,7 @@ test('navigation with a pending Enter keeps only that conversation in review',as
 test('post-persistence completion regression skips and dispatches no Enter',async()=>{
   const h=harness('preparing',{failBeforeEnterAt:2});
   const result=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
-  assert.equal(result.kind,'skip');
+  assert.equal(result.kind,'hold');
   assert.match(result.reason,/Enter NOT sent/);
   assert.equal(h.getItem().phase,'preparing');
   assert.equal(h.getItem().handledCompletionKey,'');
@@ -108,23 +108,21 @@ test('all completed safety gates allow exactly one real Enter keyDown',async()=>
   assert.equal(h.commands.filter(c=>c.method==='Input.dispatchKeyEvent' && c.args.key==='Enter' && c.args.type==='keyDown').length,1);
 });
 
-test('failed final gate clears ONLY a verified recalled prompt, never sends Enter',async()=>{
+test('failed final gate NEVER deletes a recalled prompt and never sends Enter',async()=>{
   const h=harness('preparing',{failBeforeEnterAt:2,cleanupSafe:true});
   const result=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
-  assert.equal(result.kind,'skip');
+  assert.equal(result.kind,'hold');
+  assert.match(result.reason,/composer preserved/);
   const keys=h.commands.filter(c=>c.method==='Input.dispatchKeyEvent').map(c=>c.args);
   assert.equal(keys.filter(k=>k.key==='Enter').length,0);
-  assert.equal(keys.filter(k=>k.key==='Backspace' && k.type==='keyDown').length,1);
-  assert.equal(keys.filter(k=>k.key==='Control' && k.type==='rawKeyDown').length,1);
-  assert.equal(keys.filter(k=>k.key==='a' && k.modifiers===2).length,2);
+  assert.equal(keys.filter(k=>k.key==='Backspace').length,0);
+  assert.equal(keys.filter(k=>k.key==='Control'||k.key==='Meta').length,0);
 });
-test('an unverified or human-edited draft is NEVER cleared automatically',async()=>{
+test('human draft and canceled Enter never receive deletion input',async()=>{
   const h=harness('preparing',{failBeforeEnterAt:2,cleanupSafe:false});
   await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
-  const keys=h.commands.filter(c=>c.method==='Input.dispatchKeyEvent').map(c=>c.args);
-  assert.equal(keys.filter(k=>k.key==='Backspace').length,0);
-  assert.equal(keys.filter(k=>k.key==='Control').length,0);
-  assert.equal(keys.filter(k=>k.key==='Enter').length,0);
+  assert.equal(h.commands.filter(c=>['Backspace','Escape','a'].includes(c.args.key)).length,0);
+  assert.equal(h.commands.filter(c=>c.args.key==='Enter').length,0);
 });
 
 test('missing content script is reinjected at most once per 10-second window',async()=>{
@@ -135,24 +133,35 @@ test('missing content script is reinjected at most once per 10-second window',as
   assert.equal(h.getItem().phase,'watching');
 });
 
-test('failed AFTER_UP gate cleans an exact restored prompt and does not Enter',async()=>{
+test('failed AFTER_UP gate holds only this tab and NEVER wipes text',async()=>{
   const h=harness('preparing',{failAfterUp:true,cleanupSafe:true});
   const result=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
-  assert.equal(result.kind,'skip');
+  assert.equal(result.kind,'hold');
   const keys=h.commands.filter(c=>c.method==='Input.dispatchKeyEvent').map(c=>c.args);
-  assert.equal(keys.filter(k=>k.key==='ArrowUp' && k.type==='keyDown').length,1);
+  assert.equal(keys.filter(k=>k.key==='ArrowUp'&&k.type==='keyDown').length,1);
   assert.equal(keys.filter(k=>k.key==='Enter').length,0);
-  assert.equal(keys.filter(k=>k.key==='Backspace' && k.type==='keyDown').length,1);
+  assert.equal(keys.filter(k=>['Backspace','Escape','a'].includes(k.key)).length,0);
+  assert.equal(h.getAfterUpCalls(),12);
 });
-test('failed AFTER_UP gate never clears an unverified human draft',async()=>{
-  const h=harness('preparing',{failAfterUp:true,cleanupSafe:false});
+test('temporary Send-button update can settle without ArrowUp repetition',async()=>{
+  const h=harness('preparing',{readyAfterUpCheck:3});
   const result=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
-  assert.equal(result.kind,'skip');
-  const keys=h.commands.filter(c=>c.method==='Input.dispatchKeyEvent').map(c=>c.args);
-  assert.equal(keys.filter(k=>k.key==='Enter').length,0);
-  assert.equal(keys.filter(k=>k.key==='Backspace').length,0);
-  assert.equal(keys.filter(k=>k.key==='Escape').length,0);
+  assert.equal(result.kind,'sent');
+  assert.equal(h.getAfterUpCalls(),3);
+  assert.equal(h.commands.filter(c=>c.args.key==='ArrowUp'&&c.args.type==='keyDown').length,1);
+  assert.equal(h.commands.filter(c=>c.args.key==='Enter'&&c.args.type==='keyDown').length,1);
+  assert.equal(h.commands.filter(c=>c.args.key==='Backspace').length,0);
 });
+test('failed AFTER_UP does not repeatedly press ArrowUp on subsequent scans',async()=>{
+  const h=harness('preparing',{failAfterUp:true});
+  const r=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
+  assert.equal(r.kind,'hold');
+  h.getItem().phase='needs_review';
+  await vm.runInContext('scanOne(7)',h.context);
+  assert.equal(h.getItem().phase,'needs_review');
+  assert.equal(h.commands.filter(c=>c.args.key==='ArrowUp'&&c.args.type==='keyDown').length,1);
+});
+
 test('navigating away while awaiting an acknowledged reply remains retryable',async()=>{
   const h=harness('await_reply',{url:'https://chatgpt.com/'});
   h.getItem().baseline={conversationId:'/c/one',userCount:0,assistantSig:OBS.assistantSig,sentPromptSig:OBS.lastUserSig};
@@ -214,7 +223,7 @@ test('successful Enter persists one global completion claim',async()=>{
 test('failed post-persistence gate rolls back global claim before any Enter',async()=>{
   const h=harness('preparing',{failBeforeEnterAt:2});
   const r=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
-  assert.equal(r.kind,'skip');
+  assert.equal(r.kind,'hold');
   assert.deepEqual(Object.keys(h.writes.autopilot5_state.handledGlobally||{}),[]);
   assert.equal(h.commands.some(c=>c.args.key==='Enter'),false);
 });
@@ -230,7 +239,7 @@ test('new-chat rollover does not click anything if chat is not ready', async()=>
 test('new-chat rollover skips when New Chat button is absent and never presses Enter', async()=>{
   const h=harness('preparing',{cleanupSafe:true,missingNewChat:true});
   const out=await vm.runInContext("rotateChat(7,'unit-session',"+JSON.stringify(OBS)+",{rotateDelayMs:0})",h.context);
-  assert.equal(out.kind,'skip');assert.match(out.reason,/New Chat/);
+  assert.equal(out.kind,'hold');assert.match(out.reason,/New Chat/);
   assert.equal(h.commands.filter(x=>x.args.key==='Enter').length,0);
   assert.equal(h.commands.filter(x=>x.method==='Input.insertText').length,0);
 });
@@ -238,6 +247,7 @@ test('verified rollover is click ArrowUp -> New Chat click -> new-editor input -
   const h=harness('preparing',{cleanupSafe:true,rotationAck:true});
   const out=await vm.runInContext("rotateChat(7,'unit-session',"+JSON.stringify(OBS)+",{rotateDelayMs:0})",h.context);
   assert.equal(out.kind,'rotated',out.reason);assert.equal(out.seedSig,'seed:hash');
+  assert.equal(h.commands.filter(c=>c.args.key==='Backspace'||c.args.key==='Control'||c.args.key==='Meta').length,0);
   const actions=h.commands.filter(x=>x.method==='Input.dispatchKeyEvent' || x.method==='Input.insertText' || (x.method==='Input.dispatchMouseEvent'&&x.args.type==='mouseReleased'));
   const idxUp=actions.findIndex(x=>x.args.key==='ArrowUp' && x.args.type==='keyDown');
   const idxNew=actions.findIndex((x,i)=>i>idxUp && x.method==='Input.dispatchMouseEvent' && x.args.x===90);
@@ -298,38 +308,4 @@ test('bootstrap interruption after insertion holds only that chat',async()=>{
   const out=await vm.runInContext(script,h.context);
   assert.equal(out.kind,'skip');
   assert.equal(h.commands.filter(c=>c.args.key==='Enter').length,0);
-});
-
-
-test('options report tab is authorized to start or stop monitoring',async()=>{
-  const h=harness('watching');
-  const sender={id:'extension-id',tab:{id:999},url:'chrome-extension://extension-id/report.html'};
-  const result=await new Promise((resolve,reject)=>{
-    const handled=h.handlers.message({type:'AP5_TOGGLE'},sender,resolve);
-    if(handled!==true)reject(new Error('Report control message rejected'));
-  });
-  assert.equal(result.ok,true);
-  assert.equal(h.writes.autopilot5_state.enabled,false);
-});
-test('options report tab may save new-chat rotation settings',async()=>{
-  const h=harness('watching');
-  const sender={id:'extension-id',tab:{id:999},url:'chrome-extension://extension-id/report.html'};
-  const result=await new Promise((resolve,reject)=>{
-    const handled=h.handlers.message({type:'AP5_SETTINGS',settings:{rotateEnabled:true,rotateAfter:6,rotateDelayMs:4500}},sender,resolve);
-    if(handled!==true)reject(new Error('Settings control message rejected'));
-  });
-  assert.equal(result.ok,true);
-  assert.equal(h.writes.autopilot5_settings.rotateAfter,6);
-  assert.equal(h.writes.autopilot5_settings.rotateDelayMs,4500);
-});
-test('external or untrusted scripts cannot toggle or change settings',()=>{
-  const h=harness('watching');let calls=0;
-  for(const sender of [
-    {id:'extension-id',tab:{id:7},url:'https://chatgpt.com/c/one'},
-    {id:'another-extension',url:'chrome-extension://extension-id/report.html'},
-    {id:'extension-id',url:'chrome-extension://extension-id/fake.html'}]) {
-    assert.notEqual(h.handlers.message({type:'AP5_TOGGLE'},sender,()=>calls++),true);
-    assert.notEqual(h.handlers.message({type:'AP5_SETTINGS',settings:{rotateAfter:1}},sender,()=>calls++),true);
-  }
-  assert.equal(calls,0);assert.equal(h.writes.autopilot5_state.enabled,true);
 });

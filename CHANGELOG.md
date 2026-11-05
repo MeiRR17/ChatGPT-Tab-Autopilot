@@ -1,10 +1,11 @@
-## 5.7.2 — report command authentication repair (2026-11-05)
+## 5.8.0 — Non-destructive ArrowUp and final-gate recovery
 
-- Fix the installed-extension integration issue where reporting UI controls had no effect: the MV3 message sender includes a `tab` field for an extension report opened in Chrome.
-- Require sender ID AND the exact extension-origin `report.html` URL for report toggles and rotation settings, instead of incorrectly rejecting all tab-backed senders.
-- Deny web pages, content scripts and other extensions permission to toggle monitoring or modify settings.
-- Add three Node runtime authorization tests.
-- Improve hosted Chromium integration diagnostic output; live authenticated ChatGPT E2E remains unverified.
+- Remove native select-all/Backspace from normal continuation and rollover paths. Recalled text is never auto-deleted.
+- After ArrowUp, poll the composer up to 12 times (2 seconds total) for delayed Send-button rendering; never press ArrowUp more than once per attempt.
+- On failed verification, hold **only the affected conversation** (`needs_review`) instead of repeating ArrowUp and overwriting drafts. No Enter on uncertainty.
+- Provide granular failure reasons without logging message text; recognize benign ProseMirror whitespace normalization.
+- Add regression tests for no-deletion, delayed send-button readiness, retry suppression, and new-chat handoff without deleting the original prompt.
+- Real ChatGPT authenticated validation remains unverified; this is not certified for unattended use.
 
 ## 5.7.1 — post-handoff continuation bootstrap (2026-11-05)
 

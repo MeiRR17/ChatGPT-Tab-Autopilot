@@ -228,17 +228,28 @@
       reason:!s.focused?'Click did not focus Ask ChatGPT':s.reason||'Conversation state changed'};
   }
   function afterUp(expected){
-    const s=inspect(), value=composerText(composer()), valueSig=fingerprint(value);
-    const ok=s.loaded && s.focused && enabledSendControl() && !s.busy && s.completed && !s.requiresAction &&
-      s.hasComposer && consistent(s,expected) && !!value &&
-      valueSig===expected.lastUserSig && valueSig===s.allowedPromptSig;
-    return {ok,editorEmpty:!value,reason:s.busy?'ChatGPT resumed generation; skip Enter':
-      !s.completed?'Completion evidence disappeared; skip Enter':
-      !enabledSendControl()?'Send control not enabled; skip Enter':
-      !s.focused?'ArrowUp lost composer focus; skip Enter':
-      !value?'ArrowUp did not recall a message':
-      !consistent(s,expected)?'Conversation changed during input':
-      'Recalled text differs from last user message; no Enter'};
+    const s=inspect(), ed=composer(), value=composerText(ed);
+    const lastUser=getTurns().filter(n=>role(n)==='user').at(-1);
+    const expectedText=permittedPrompt(lastUser);
+    // ProseMirror may turn CRLF, NBSP, and wrapping into different raw text.
+    // Compare the actual words, not unrelated messages or untrusted drafts.
+    const normalized=value=>norm(value).replace(/\u00a0/g,' ').replace(/[ \t]+/g,' ').replace(/\n{2,}/g,'\n');
+    const sameText=expectedText.ok && !!value &&
+      normalized(value)===normalized(expectedText.text);
+    const sendEnabled=enabledSendControl(), sameTurn=consistent(s,expected);
+    const ok=s.loaded && s.focused && sendEnabled && !s.busy && s.completed &&
+      !s.requiresAction && s.hasComposer && sameTurn && sameText;
+    let reason='';
+    if(!s.loaded)reason='ChatGPT page not fully loaded';
+    else if(s.busy)reason='Assistant resumed generation';
+    else if(s.requiresAction)reason='Approval or dialog is blocking input';
+    else if(!s.completed)reason='Assistant completion evidence disappeared';
+    else if(!s.focused)reason='Composer focus lost after ArrowUp';
+    else if(!sameTurn)reason='Conversation changed during ArrowUp';
+    else if(!value)reason='ArrowUp did not restore text in the composer';
+    else if(!sameText)reason='Restored text differs from the last continuation message';
+    else if(!sendEnabled)reason='Send control is not enabled after ArrowUp';
+    return {ok,editorEmpty:!value,reason};
   }
   function beforeEnter(expected){
     const r=afterUp(expected);
@@ -246,16 +257,6 @@
     const s=inspect();
     return {ok:s.completed && !s.busy && enabledSendControl() && s.focused && s.hasDraft && consistent(s,expected),
       reason:'Pre-Enter safety check failed'};
-  }
-  function cleanupCheck(expected){
-    // Abort cleanup unless the field still contains EXACTLY the prompt this
-    // extension restored. Never erase a user's different draft or touch an
-    // editor belonging to another conversation.
-    const ed=composer(), value=composerText(ed);
-    const safe=!!ed && onChat() && location.pathname===expected?.conversationId &&
-      (document.activeElement===ed || ed.contains(document.activeElement)) &&
-      !!value && fingerprint(value)===expected.lastUserSig;
-    return {ok:safe,modifier:/Mac/i.test(navigator.platform)?'Meta':'Control'};
   }
   function rolloverCapture(expected){
     const s=inspect();const ed=composer(),value=composerText(ed);
@@ -370,7 +371,6 @@
       case 'AP5_AFTER_CLICK':reply(afterClick(m.expected));break;
       case 'AP5_AFTER_UP':reply(afterUp(m.expected));break;
       case 'AP5_BEFORE_ENTER':reply(beforeEnter(m.expected));break;
-      case 'AP5_CLEANUP_CHECK':reply(cleanupCheck(m.expected));break;
       case 'AP5_ROLLOVER_CAPTURE':reply(rolloverCapture(m.expected));break;
       case 'AP5_FIND_NEW_CHAT':reply(findNewChat());break;
       case 'AP5_NEW_CHAT_PREPARE':reply(newChatPrepare());break;

@@ -5,7 +5,7 @@ const ROOT=path.resolve(__dirname,'..');
 const manifest=JSON.parse(fs.readFileSync(path.join(ROOT,'manifest.json'),'utf8'));
 test('V5 scoped Chrome extension',()=>{
   assert.equal(manifest.manifest_version,3);
-  assert.equal(manifest.version,'5.7.2');
+  assert.equal(manifest.version,'5.8.0');
   assert.deepEqual(manifest.host_permissions,['https://chatgpt.com/*','https://chat.openai.com/*']);
   for(const f of ['background.js','content.js','core.js','report.html','report.css','report.js','report-utils.js'])
     assert.ok(fs.existsSync(path.join(ROOT,f)),f);
@@ -31,9 +31,16 @@ test('migrate old logs and provide report export',()=>{
   assert.match(r,/exportJson/);assert.match(r,/exportCsv/);assert.match(r,/exportMd/);
 });
 
-test('v5.1 prevents Enter without an enabled Send control',()=>{
+test('v5.8 prevents Enter without an enabled Send control',()=>{
   const source=fs.readFileSync(path.join(__dirname,'../content.js'),'utf8');
   assert.match(source,/function enabledSendControl\(\)/);
-  assert.match(source,/const ok=s.loaded && s.focused && enabledSendControl\(\)/);
+  assert.match(source,/const sendEnabled=enabledSendControl\(\)/);
   assert.match(source,/return \{ok:s.completed && !s.busy && enabledSendControl\(\)/);
+});
+
+test('no native cleanup/backspace or select-all is sent after ArrowUp',()=>{
+  const worker=fs.readFileSync(path.join(ROOT,'background.js'),'utf8');
+  assert.doesNotMatch(worker,/clearRestoredPrompt|CLEANUP_CHECK|code:'Backspace'|code:'KeyA'|code:'ControlLeft'|code:'MetaLeft'/);
+  assert.match(worker,/awaitRestoredPrompt/);
+  assert.match(worker,/kind:'hold',reason:'ArrowUp not verified/);
 });

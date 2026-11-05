@@ -2,7 +2,7 @@
 
 - `background.js`: MV3 service worker, monitoring session, tab-level task queue, Chrome debugger input, persistence, event logging and local report entrypoint.
 - `core.js`: deterministic state machine for each conversation. A busy/unready tab remains in `watching`. `await_ack` and `await_reply` prohibit duplicate Enter during a pending response. Ambiguous Enter delivery enters `needs_review` only for that tab.
-- `content.js`: read-only DOM inspection and safe cleanup verification (chat path, last user prompt, assistant completion actions, stop/approval signals, visible composer, prompt fingerprint), and coordinate/focus assertions for the input sequence. Ordinary continuation uses physical-equivalent ArrowUp only. An intentional new-chat handoff inserts a bounded contextual seed with Chrome Debugger Input.insertText, without using the physical clipboard.
+- `content.js`: read-only DOM inspection and non-destructive restoration verification (chat path, last user prompt, assistant completion actions, stop/approval signals, visible composer, prompt fingerprint), and coordinate/focus assertions for the input sequence. Ordinary continuation uses physical-equivalent ArrowUp only. An intentional new-chat handoff inserts a bounded contextual seed with Chrome Debugger Input.insertText, without using the physical clipboard.
 - `report.html`, `report.js`, `report.css`: local diagnostics and CSV/JSON/Markdown export. No external telemetry.
 
 ## Sequence
@@ -32,7 +32,7 @@ ChatGPT's UI is not a stable documented API. Completion actions, editor markup, 
 
 - Missing content script: throttle reinjection attempts to once per tab per 10 seconds. No input is sent based on an absent inspector.
 - Temporary non-chat URL: routine `watching` skip; the user can navigate back and resume. If Enter may have been delivered, remain in review to prevent duplicate submission.
-- A restored prompt left after a failed final safety gate is cleared via native select-all/backspace **only if** the same original composer is focused and contains the exact fingerprint of the prompt restored by ArrowUp. Otherwise preserve the field and log the skipped cleanup.
+- A restored prompt left after a failed final safety gate is **never deleted**. The tab is moved to `needs_review` (other tabs keep running), so the worker does not replay ArrowUp endlessly. Read-only composer verification uses bounded polling for a delayed Send button.
 - Toolbar and report toggles use one serialized toggle queue, preventing rapid-click overlap.
 
 ## Verification boundary
@@ -48,3 +48,7 @@ The state machine records a durable `rotating` state before navigation and `rota
 ## One-time short prompt bootstrap (v5.7.1)
 
 The long handoff is intentionally not eligible for ArrowUp. Following the first positively completed assistant reply in the fresh chat, `bootstrapPending` gates a tab-local mouse focus and one-time `Input.insertText` for a generic short continuation (Hebrew or English), verified again before Enter. A durable per-completion claim is persisted before this Enter; ambiguous delivery quarantines only that tab. After a new short user turn is acknowledged, the ordinary ArrowUp loop resumes and the next rollover threshold is counted from the new-chat handoff.
+
+## v5.8: non-destructive recovery
+
+The worker does not send Ctrl/Cmd+A, Backspace or Escape. If ArrowUp is dispatched but verification fails, it preserves the draft and holds only that tab for manual review. A once-only ArrowUp dispatch is followed by bounded polling, not by repeated ArrowUp. Automatic rollover likewise never clears the old draft and only continues when the new editor is verifiably blank.

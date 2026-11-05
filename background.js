@@ -75,8 +75,8 @@ async function badge() {
   await chrome.action.setBadgeText({text:!s.enabled?'':held?'!':String(sent||'ON')});
   await chrome.action.setBadgeBackgroundColor({color:held?'#b45309':'#15803d'});
   await chrome.action.setTitle({title:s.enabled
-    ? `ChatGPT Autopilot v5.7.2 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
-    : 'ChatGPT Autopilot v5.7.2 · off · click to start; right-click for report'});
+    ? `ChatGPT Autopilot v5.8.0 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
+    : 'ChatGPT Autopilot v5.8.0 · off · click to start; right-click for report'});
 }
 async function running(session) { const s=await getState(); return s.enabled&&s.session===session; }
 async function stop(reason='Stopped by user') {
@@ -140,27 +140,23 @@ async function pressKey(target,key,code,virtualKey,text=null) {
     ...(text===null?{}:{text,unmodifiedText:text})});
   await dispatch(target,'Input.dispatchKeyEvent',{type:'keyUp',...base});
 }
-async function clearRestoredPrompt(target,id,expected) {
-  // Some UIs leave the recalled prompt visible after a failed completion
-  // gate. Only clear text when content.js proves it is still exactly our
-  // recalled prompt and the same conversation/composer has focus.
-  const check=await tabMessage(id,'AP5_CLEANUP_CHECK',{expected}).catch(()=>null);
-  if(!check?.ok)return false;
-  const mac=check.modifier==='Meta',modifier=mac?4:2;
-  const modKey=mac?'Meta':'Control',modCode=mac?'MetaLeft':'ControlLeft',modV=mac?91:17;
-  const m={key:modKey,code:modCode,windowsVirtualKeyCode:modV,nativeVirtualKeyCode:modV,modifiers:modifier};
-  const a={key:'a',code:'KeyA',windowsVirtualKeyCode:65,nativeVirtualKeyCode:65,modifiers:modifier};
-  await dispatch(target,'Input.dispatchKeyEvent',{type:'rawKeyDown',...m});
-  try {
-    await dispatch(target,'Input.dispatchKeyEvent',{type:'rawKeyDown',...a});
-    await dispatch(target,'Input.dispatchKeyEvent',{type:'keyUp',...a});
-  }finally{
-    await dispatch(target,'Input.dispatchKeyEvent',{type:'keyUp',...m}).catch(()=>{});
+// Never select-all, Backspace, Escape, or programmatically erase a recalled
+// user prompt. An uncertain ArrowUp leaves the field untouched and places
+// only this conversation in review; all other chats continue monitoring.
+const AFTER_UP_SETTLE_ATTEMPTS = 12;
+const AFTER_UP_SETTLE_MS = 175;
+async function awaitRestoredPrompt(id,expected) {
+  let result=null;
+  for(let attempt=0;attempt<AFTER_UP_SETTLE_ATTEMPTS;attempt++) {
+    result=await tabMessage(id,'AP5_AFTER_UP',{expected}).catch(()=>null);
+    if(result?.ok)return result;
+    // React may enable the Send button shortly AFTER the native ArrowUp event.
+    // Do not press ArrowUp a second time while waiting.
+    if(attempt<AFTER_UP_SETTLE_ATTEMPTS-1)await wait(AFTER_UP_SETTLE_MS);
   }
-  await pressKey(target,'Backspace','Backspace',8);
-  const after=await tabMessage(id,'AP5_INSPECT').catch(()=>null);
-  return !!after && !after.hasDraft;
+  return result||{ok:false,reason:'ArrowUp result could not be inspected'};
 }
+
 async function act(id,session,observed) {
   const expected={conversationId:observed.conversationId,assistantSig:observed.assistantSig,
     userCount:observed.userCount,lastUserSig:observed.lastUserSig,
@@ -192,22 +188,23 @@ async function act(id,session,observed) {
     if(!await running(session))return {kind:'skip',reason:'Monitoring stopped'};
     arrowUpAttempted=true;
     await pressKey(target,'ArrowUp','ArrowUp',38);
-    await wait(180);
-    check=await tabMessage(id,'AP5_AFTER_UP',{expected});
+    check=await awaitRestoredPrompt(id,expected);
     if(!check?.ok) {
       // Do not send Enter when ArrowUp opened message editing, did nothing or
       // the assistant started producing again. Skip this tab, keep others running.
       // No blind Escape: ArrowUp may have opened a different ChatGPT editor.
-      // The finally block checks if a precisely matched recall can be cleaned.
-      return {kind:'skip',reason:check?.reason||'ArrowUp did not recall the prompt'};
+      // IMPORTANT: Never auto-delete user-visible text, and never retry
+      // ArrowUp indefinitely on the same chat. Hold only this tab for review.
+      return {kind:'hold',reason:'ArrowUp not verified; preserved composer; no Enter: '+
+        (check?.reason||'Unknown composer state')};
     }
 
-    if(!await running(session))return {kind:'skip',reason:'Monitoring stopped before Enter'};
+    if(!await running(session))return {kind:'hold',reason:'Stopped after ArrowUp; preserving composer'};
     // Last-moment independent gate: must STILL have a completed assistant
     // response and the exact same restored message focused in the composer.
     check=await tabMessage(id,'AP5_BEFORE_ENTER',{expected});
-    if(!check?.ok) return {kind:'skip',reason:check?.reason||'Response completion not confirmed'};
-    if(!await running(session))return {kind:'skip',reason:'Monitoring stopped before Enter'};
+    if(!check?.ok) return {kind:'hold',reason:'Cannot safely press Enter; preserving composer: '+(check?.reason||'Response completion not confirmed')};
+    if(!await running(session))return {kind:'hold',reason:'Stopped after ArrowUp; preserving composer'};
     // Enter may be delivered even if the service worker dies after this write.
     // On restart, `sending` is treated as uncertain, never blindly resent.
     const claimed=await mark(id,session,(item,wholeState)=>{
@@ -226,7 +223,7 @@ async function act(id,session,observed) {
         sentPromptSig:observed.lastUserSig};
       return true;
     });
-    if(claimed!==true) return {kind:'skip',reason:'Session changed before Enter'};
+    if(claimed!==true) return {kind:'hold',reason:'Session/claim changed after ArrowUp; preserving composer'};
     // Persisting the claim can take time. Revalidate once more AFTER the
     // storage write: a Stop button, tool approval or navigation may appear
     // during that gap. A failed check is safe to roll back: no Enter happened.
@@ -245,27 +242,17 @@ async function act(id,session,observed) {
           item.baseline=null;item.sentAt=0;
         }
       });
-      return {kind:'skip',reason:'Final post-persistence check failed; Enter NOT sent'};
+      return {kind:'hold',reason:'Final post-persistence check failed; Enter NOT sent; composer preserved'};
     }
     enterBoundary=true;
     await pressKey(target,'Enter','Enter',13,'\r');
     return {kind:'sent'};
   }catch(err){
-    return {kind:enterBoundary?'hold':'skip',
-      reason:`Tab input failed: ${String(err?.message||err).slice(0,200)}`};
+    return {kind:(enterBoundary||arrowUpAttempted)?'hold':'skip',
+      reason:`Tab input failed${arrowUpAttempted?'; composer preserved':''}: ${String(err?.message||err).slice(0,200)}`};
   }finally{
-    // We know no Enter was attempted. Do not leave our recalled text in the
-    // user's composer after an unrelated safety gate failed. A human-edited
-    // field is never cleared; only an exact fingerprint match is eligible.
-    if(attached && arrowUpAttempted && !enterBoundary && await running(session)) {
-      try {
-        const clean=await clearRestoredPrompt(target,id,expected);
-        if(!clean)await logEvent('draft_cleanup_skipped',id,
-          'Recalled prompt may remain; automatic cleanup not proven safe','warning');
-      }catch(err){
-        await logEvent('draft_cleanup_failed',id,String(err?.message||err),'warning');
-      }
-    }
+    // Nothing in the normal path deletes or alters a recalled prompt.
+    // If validation failed, the affected chat remains visible for inspection.
     if(attached)await chrome.debugger.detach(target).catch(()=>{});
   }
 }
@@ -296,20 +283,17 @@ async function rotateChat(id,session,observed,settings){
     const focused=await tabMessage(id,'AP5_AFTER_CLICK',{expected}).catch(()=>null);
     if(!focused?.ok)return {kind:'skip',reason:'Composer not focused; skipping rollover'};
     arrowAttempt=true;await pressKey(target,'ArrowUp','ArrowUp',38);
-    await wait(200);
-    const checked=await tabMessage(id,'AP5_AFTER_UP',{expected}).catch(()=>null);
-    if(!checked?.ok)return {kind:'skip',reason:'ArrowUp did not safely recall the prompt'};
+    const checked=await awaitRestoredPrompt(id,expected);
+    if(!checked?.ok)return {kind:'hold',reason:'Rollover ArrowUp not verified; draft preserved: '+(checked?.reason||'Unknown state')};
     const captured=await tabMessage(id,'AP5_ROLLOVER_CAPTURE',{expected}).catch(()=>null);
-    if(!captured?.ok)return {kind:'skip',reason:'Could not capture verified prompt and prior context'};
+    if(!captured?.ok)return {kind:'hold',reason:'Could not capture verified prompt; draft preserved'};
     const seed=handoffText(captured.prompt,captured.assistantExcerpt);
-    if(!seed)return {kind:'skip',reason:'Missing context; refusing to create contextless new chat'};
-    // Require the exact recalled prompt to be cleared so the old chat retains
-    // no unsent draft. Do not clear text that the user has changed.
-    if(!await clearRestoredPrompt(target,id,expected))
-      return {kind:'skip',reason:'Could not clean verified recalled prompt; preserving old chat'};
-    arrowAttempt=false;
+    if(!seed)return {kind:'hold',reason:'Missing context; draft preserved; no new chat opened'};
+    // Never erase the recalled text in the old conversation. New Chat may
+    // open a blank draft; if it carries the old draft forward, NEW_CHAT_PREPARE
+    // rejects the handoff without deleting or overwriting anything.
     const newChat=await tabMessage(id,'AP5_FIND_NEW_CHAT').catch(()=>null);
-    if(!newChat?.ok)return {kind:'skip',reason:newChat?.reason||'New Chat control not found'};
+    if(!newChat?.ok)return {kind:'hold',reason:'Rollover blocked; old draft preserved: '+(newChat?.reason||'New Chat control not found')};
     // Durable pre-navigation claim: if Chrome crashes mid-transfer, the
     // extension never replays the same assistant completion blindly.
     const key=`${observed.conversationId}|${observed.userCount}|${observed.assistantSig}`;
@@ -321,7 +305,7 @@ async function rotateChat(id,session,observed,settings){
       item.rotationStartedAt=time();item.handledCompletionKey=key;
       return true;
     });
-    if(!claimed)return {kind:'skip',reason:'Rotation claim lost; skipping'};
+    if(!claimed)return {kind:'hold',reason:'Rotation claim lost after ArrowUp; composer preserved'};
     // Do not click a control that became invalid between DOM lookup and use.
     if(!await running(session))return {kind:'hold',reason:'Monitoring stopped near new-chat navigation'};
     const current=await tabMessage(id,'AP5_FIND_NEW_CHAT').catch(()=>null);
@@ -366,10 +350,8 @@ async function rotateChat(id,session,observed,settings){
     await pressKey(target,'Enter','Enter',13,'\r');
     return {kind:'rotated',seedSig:verified.seedSig || '',bootstrapLanguage:/[\u0590-\u05ff]/u.test(captured.prompt)?'he':'en',reason:'Entered new chat with bounded context excerpt'};
   }catch(e){
-    return {kind:(clickedNew||enterBoundary)?'hold':'skip',reason:'New chat rollover failed: '+String(e?.message||e).slice(0,180)};
+    return {kind:(arrowAttempt||clickedNew||enterBoundary)?'hold':'skip',reason:'New chat rollover failed; composer preserved: '+String(e?.message||e).slice(0,180)};
   }finally{
-    if(attached&&arrowAttempt&&!clickedNew&&!enterBoundary&&await running(session))
-      await clearRestoredPrompt(target,id,expected).catch(()=>false);
     if(attached)await chrome.debugger.detach(target).catch(()=>{});
   }
 }
@@ -660,7 +642,7 @@ async function init() {
     }
     scanAll();
   }
-  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.7.2');
+  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.8.0');
 }
 // Serialize user toggles to avoid two rapid clicks starting overlapping runs.
 function toggle(tab) {

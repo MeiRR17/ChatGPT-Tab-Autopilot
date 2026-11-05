@@ -79,10 +79,9 @@ async def main():
    captured=await ask('AP5_ROLLOVER_CAPTURE',expected=exp);assert captured['ok'],captured
    assert captured['prompt']=='תמשיך את הפיתוח'
    assert '55 verified' in captured['assistantExcerpt']
-   # Only clean a provably recalled input.
-   assert (await ask('AP5_CLEANUP_CHECK',expected=exp))['ok']
-   await page.locator('#editor').press('ControlOrMeta+A');await key('Backspace','Backspace',8)
-   assert not (await ask('AP5_INSPECT'))['hasDraft']
+   # The extension must NOT wipe a recovered draft to open a new chat.
+   assert (await ask('AP5_INSPECT'))['hasDraft']
+   assert await page.locator('#editor').inner_text() == 'תמשיך את הפיתוח'
    nc=await ask('AP5_FIND_NEW_CHAT');assert nc['ok'],nc
    await click(nc); assert (await page.evaluate('window.__testPath'))=='/'
    next_editor=await ask('AP5_NEW_CHAT_PREPARE');assert next_editor['ok'],next_editor

@@ -1,6 +1,10 @@
+# ChatGPT Tab Autopilot — v5.8.0
+
+**Safety fix:** v5.7.x could press ArrowUp and then clear the restored text when validation failed. v5.8 never deletes the restored text; it waits briefly for the Send button to settle, or holds that chat for manual review while other chats continue.
+
 # ChatGPT Tab Autopilot
 
-**Version 5.7.2 — experimental local Chrome extension, Manifest V3.**
+**Version 5.7.1 — experimental local Chrome extension, Manifest V3.**
 
 Monitors existing ChatGPT conversations in the **same Chrome window** without switching tabs or taking over your physical keyboard/mouse. When a conversation **positively appears finished**, the extension attempts this exact sequence inside that tab:
 
@@ -81,7 +85,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TEST_REPORT.md`](docs
 ### v5.3 changes (reliability maintenance)
 
 - **Final authorization check after persistence.** The extension now rechecks the completed-response signal *after* writing the idempotency marker and immediately before Enter. If the model resumed producing during that storage operation, Enter is not sent and the claim is safely rolled back.
-- **Draft cleanup after a rejected send.** If ArrowUp restored the original continuation request but a subsequent safety check fails, the extension tries to clear that restored request with native keyboard input **only if** the field still contains the exact verified request and has focus. User-authored or uncertain text is never erased. If cleanup cannot be verified, the event log records this and the chat is not sent.
+- **Never delete a recalled draft (v5.8).** A rejected safety check after ArrowUp preserves the composer exactly as-is and puts only the affected chat in `needs_review`, preventing a repeated ArrowUp loop. No Ctrl/Cmd+A, Backspace, or Escape is dispatched automatically. Other chats keep running.
 - **Navigation-safe skips.** Switching a monitored tab away from a chat no longer turns an ordinary watching conversation into `needs_review`. In-flight/uncertain submissions remain protected.
 - **Content-script recovery.** A missing inspector is reinjected in a supported chat with a 10-second per-tab retry throttle and independently monitored recovery.
 - **Serialized start/stop.** Rapid toolbar/report toggles cannot create two competing monitoring sessions.
@@ -90,7 +94,7 @@ These changes do **not** make the Chrome UI an authoritative completion signal. 
 
 ## v5.5: recovery, CSV safety and reproducible CI
 
-- If ArrowUp restores the exact last continuation text but **completion becomes unconfirmed**, cancel Enter and attempt a narrowly scoped cleanup of only that exact recalled text. Previously this failure path could strand a draft and cause endless skips. If its origin cannot be confirmed, **no cleanup takes place**; the conversation will wait for manual attention while other tabs continue.
+- If ArrowUp restores text but **completion becomes unconfirmed**, cancel Enter, preserve all text and hold only that conversation for review. Older releases performed an automatic select-all/Backspace cleanup; this has been removed in v5.8.
 - Never issue a blind Escape when ArrowUp does not yield a valid composer: this could otherwise dismiss a human-controlled interface.
 - If a continuation was **already acknowledged**, navigating away while waiting for its answer is a temporary skip, not an uncertain-Enter quarantine. Returning to the same chat resumes monitoring.
 - CSV export now neutralizes spreadsheet formula prefixes in untrusted tab names/event descriptions.
@@ -102,16 +106,12 @@ The new tests are still synthetic. **Installed extension E2E and live ChatGPT E2
 
 When the same conversation URL is open in multiple monitored tabs **in the same Chrome window**, only the lowest-ID live monitored tab may send. Other copies are skipped, not marked failed; after closing or navigating away from the owner, another tab can become eligible. The guard is checked before clicking and again directly before Enter. A session-scoped durable completion claim also prevents another copy from resending the same response after the original tab closes; the claim is rolled back only if Enter was never attempted. This is a **local tab de-duplication guard**, not a distributed lock across profiles, windows or devices. Do not use multiple browser profiles to automate the same conversation.
 
-## Automatic new chat after N continuations (v5.7.2 experimental)
+## Automatic new chat after N continuations (v5.8.0 experimental)
 
-Open the extension's **Activity report**, find **Automatic new chat handoff**, and set the threshold (default: 10 successful continuation send attempts per monitored conversation) and delay before Enter (default: 3.5 s). The same tab is used. Once the threshold is reached **and the current response is positively completed**, the extension clicks the old composer, performs ArrowUp, validates the recalled prompt, clears it safely, clicks the visible **New Chat** control, waits for the new blank editor, pastes a bounded excerpt of the last assistant reply plus the previous continuation instruction, verifies the new draft, and then presses Enter.
+Open the extension's **Activity report**, find **Automatic new chat handoff**, and set the threshold (default: 10 successful continuation send attempts per monitored conversation) and delay before Enter (default: 3.5 s). The same tab is used. Once the threshold is reached **and the current response is positively completed**, the extension clicks the old composer, performs ArrowUp, validates the recalled prompt, **does not erase it**, clicks the visible **New Chat** control, waits for the new blank editor, pastes a bounded excerpt of the last assistant reply plus the previous continuation instruction, verifies the new draft, and then presses Enter.
 
 **Context limitation:** The full prior conversation is not automatically transferred. Do not use this as a substitute for an explicit project handoff or durable project state. The excerpt travels in-memory only, and is not written to local storage, diagnostics, or version control. If any step is uncertain, that tab is skipped or marked as requiring review; the other tabs continue. An interrupted rollover is *never* blindly retried.
 
-### One-time short continuation after the new chat handoff (v5.7.2)
+### One-time short continuation after the new chat handoff (v5.8.0)
 
 The initial handoff is long and would be incorrectly repeated by ArrowUp. When ChatGPT finishes its **first** answer in the new chat, the extension therefore sends one short language-matched continuation request using tab-local text input (Hebrew: `תמשיך את הפיתוח`; English: `Continue the development.`). It confirms the positive completion signal and Send button before that Enter, and persists a crash-safe idempotency claim. After that one-time bootstrap, the normal mouse click → ArrowUp → Enter sequence resumes. No long handoff prompt is repeatedly replayed.
-
-### Report controls authentication (v5.7.2)
-
-The report is itself a Chrome extension tab. Monitoring toggles and rollover settings are accepted only from the exact `chrome-extension://<this-extension-id>/report.html` page, including when Chrome supplies `sender.tab`. Ordinary websites, content scripts and other extensions cannot invoke these controls.
