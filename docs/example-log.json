@@ -1,0 +1,34 @@
+[
+  {
+    "timestamp": "2026-11-05T13:00:00.000Z",
+    "event": "monitor_started",
+    "tabId": null,
+    "message": "Found 3 conversations; continuous independent monitoring",
+    "level": "info",
+    "title": ""
+  },
+  {
+    "timestamp": "2026-11-05T13:00:02.000Z",
+    "event": "generation_active",
+    "tabId": 101,
+    "message": "ChatGPT generating; skipping",
+    "level": "info",
+    "title": "Example chat A"
+  },
+  {
+    "timestamp": "2026-11-05T13:00:06.000Z",
+    "event": "ready",
+    "tabId": 102,
+    "message": "Completed response; ready to send",
+    "level": "info",
+    "title": "Example chat B"
+  },
+  {
+    "timestamp": "2026-11-05T13:00:07.000Z",
+    "event": "send_enter",
+    "tabId": 102,
+    "message": "Awaiting continuation message acknowledgement",
+    "level": "info",
+    "title": "Example chat B"
+  }
+]

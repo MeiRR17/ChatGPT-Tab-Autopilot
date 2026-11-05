@@ -1,1 +1,42 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ChatGPT Autopilot Report</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font:15px system-ui;max-width:1050px;margin:30px auto;padding:0 18px;background:#f7f8fa;color:#17212b}h1{margin-bottom:8px}.box{background:white;border:1px solid #dce0e5;border-radius:10px;padding:20px;margin:14px 0}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #e1e5eb;text-align:left;padding:8px}button{padding:9px 12px;border:1px solid #aaa;border-radius:6px;background:white;cursor:pointer}small{color:#556}code{font-size:12px}</style></head><body><h1>ChatGPT Tab Autopilot</h1><p>Local status and event history. Nothing here is uploaded to a server.</p><div class="box"><strong id="status">Loading…</strong> <button id="refresh">Refresh</button> <button id="export">Export JSON</button> <button id="clear">Clear events</button></div><div class="box"><h2>Conversations</h2><table><thead><tr><th>Tab</th><th>Phase</th><th>Sent</th><th>Explanation</th></tr></thead><tbody id="tabs"></tbody></table></div><div class="box"><h2>Events (latest first)</h2><table><thead><tr><th>Time</th><th>Tab</th><th>Event</th><th>Details</th></tr></thead><tbody id="events"></tbody></table></div><script src="report.js"></script></body></html>
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>ChatGPT Tab Autopilot · Activity report</title>
+<link rel="stylesheet" href="report.css" />
+</head>
+<body>
+<main class="container">
+  <header class="heading">
+    <div class="brand"><span class="mark">↻</span><div><div class="eyebrow">CHATGPT TAB AUTOPILOT · V5.6</div><h1>Activity and diagnostics</h1><p>Monitor independent chats, send attempts, completed replies, and errors — locally in Chrome.</p></div></div>
+    <div class="actions"><span id="state-pill" class="pill">Loading data</span><button id="toggle" class="primary">Start monitoring</button></div>
+  </header>
+  <section class="metrics" aria-label="Summary">
+    <article><div class="metric-label">Monitored conversations</div><strong id="tabsCount">—</strong></article>
+    <article><div class="metric-label">Send attempts</div><strong id="sentCount">—</strong></article>
+    <article><div class="metric-label">Needs review</div><strong id="errorCount">—</strong></article>
+    <article><div class="metric-label">Stored events</div><strong id="eventCount">—</strong></article>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><div><h2>Conversation status</h2><p>Each conversation is scanned independently. Busy chats are skipped; never interrupted. Positive completion evidence is required before Enter.</p></div><span id="last-refresh" class="muted"></span></div>
+    <div class="table-scroll"><table><thead><tr><th>Tab</th><th>Status</th><th>Sends</th><th>Last updated</th><th>Details</th></tr></thead><tbody id="tabs-body"><tr><td colspan="5">No data</td></tr></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><div><h2>Event log</h2><p>Local activity records plus legacy logs (when updated with the same extension ID). No chat message bodies are stored.</p></div><div class="tools"><button id="exportJson">Export JSON</button><button id="exportCsv">CSV</button><button id="exportMd">Markdown report</button></div></div>
+    <div class="filters"><input id="search" type="search" placeholder="Search events, tab titles and reasons" /><select id="severity"><option value="all">All levels</option><option value="error">Errors only</option><option value="warning">Warnings only</option><option value="info">Info only</option></select><select id="tabFilter"><option value="all">All tabs</option></select><span id="shown" class="muted"></span></div>
+    <div class="table-scroll"><table><thead><tr><th>Time</th><th>Level</th><th>Event</th><th>Tab</th><th>Description</th></tr></thead><tbody id="logs-body"><tr><td colspan="5">No events yet</td></tr></tbody></table></div>
+  </section>
+  <section class="panel fine-print">
+    <h2>Diagnostics and history</h2>
+    <p id="legacy">Legacy data can be imported only when updating the same extension installation/ID. A separately installed extension cannot read the old extension’s storage.</p>
+    <p>Privacy: the extension only targets ChatGPT pages in the selected Chrome window, contains no external telemetry, and stores up to 5,000 log entries in local Chrome storage. Export logs regularly if you need a longer history. Click the extension icon again to stop. Synthetic mouse input does not move the physical pointer.</p>
+    <p>Safety: completion needs a positive finished-response action on the latest assistant turn. The absence of a Stop button is not enough. ChatGPT changes its DOM, so this is a best-effort check and cannot guarantee perfect completion detection. Ambiguous Enter delivery quarantines only the affected conversation; all others remain monitored.</p>
+  </section>
+  <footer>Autopilot v5.6 · Local report · no cloud synchronization · no message body logging</footer>
+</main>
+<script src="report-utils.js"></script>
+<script src="report.js"></script>
+</body>
+</html>
