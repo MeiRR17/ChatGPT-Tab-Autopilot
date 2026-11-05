@@ -81,7 +81,7 @@ const AutopilotCore = (() => {
         review('User message changed while awaiting reply','external_interference');return out;
       }
       const newAssistant=!!obs.assistantSig && obs.assistantSig!==item.baseline.assistantSig;
-      if(newAssistant && obs.ready && obs.completed && !obs.busy && obs.lastRole==='assistant'){
+      if(newAssistant && (obs.ready || (item.bootstrapPending && obs.loaded && obs.stable && obs.completed && obs.hasComposer && !obs.hasDraft && !obs.requiresAction)) && obs.completed && !obs.busy && obs.lastRole==='assistant'){
         item.baseline=null; item.candidateKey=''; item.candidateAt=0;
         transition('watching','Reply completed; eligible for rescan','reply_completed');
         return out;

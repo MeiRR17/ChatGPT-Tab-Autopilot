@@ -76,11 +76,14 @@ async def main():
                 report=await ctx.new_page();await report.goto(f'chrome-extension://{eid}/report.html')
                 await good.bring_to_front()
                 await report.evaluate("async()=>await chrome.runtime.sendMessage({type:'AP5_TOGGLE'})")
-                await good.wait_for_timeout(8500)
+                await good.wait_for_timeout(12000)
                 first=await good.evaluate("()=>({sends,clicks,ups,overlaps,busy})")
                 other=await busy.evaluate("()=>({sends,clicks,ups,overlaps,busy})")
                 shadow=await duplicate.evaluate("()=>({sends,clicks,ups,overlaps,busy})")
-                print('at 8.5s ready tab:',first,'busy tab:',other,'duplicate:',shadow)
+                print('at 12s ready tab:',first,'busy tab:',other,'duplicate:',shadow)
+                if first['sends']<1:
+                    debug=await report.evaluate("async()=>(await chrome.storage.local.get(['autopilot5_state','autopilot5_logs']))")
+                    print('READY_TAB_DEBUG',json.dumps(debug,ensure_ascii=False)[:6000])
                 assert first['sends']>=1, 'ready tab did not send'
                 assert first['clicks']>=1 and first['ups']>=1, 'no real mouse/Up sequence'
                 assert first['overlaps']==0

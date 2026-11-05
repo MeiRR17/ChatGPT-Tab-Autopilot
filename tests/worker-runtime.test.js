@@ -44,6 +44,9 @@ function harness(phase='watching',options={}){
           case 'AP5_NEW_CHAT_PREPARE':return {ok:!options.newChatUnavailable,x:30,y:30};
           case 'AP5_NEW_CHAT_FOCUSED':return {ok:true};
           case 'AP5_NEW_CHAT_VERIFY':return options.rotationNotReady ? {ok:false,reason:'Not ready'} : {ok:true,seedSig:'seed:hash'};
+          case 'AP5_BOOTSTRAP_PREPARE':return {ok:!options.bootstrapNotReady,x:20,y:30};
+          case 'AP5_BOOTSTRAP_FOCUSED':return {ok:true};
+          case 'AP5_BOOTSTRAP_VERIFY':return {ok:!options.bootstrapNotReady,promptSig:'bootstrap:hash'};
           default:return {ok:true};
         }
       },onRemoved:event('removed'),onUpdated:event('updated')},
@@ -266,4 +269,33 @@ test('rollover settings are bounded and default to ten continuations',async()=>{
   h.writes.autopilot5_settings={rotateEnabled:true,rotateAfter:999,rotateDelayMs:0};
   const bounded=await vm.runInContext('getSettings()',h.context);
   assert.equal(bounded.rotateAfter,100);assert.equal(bounded.rotateDelayMs,2000);
+});
+
+
+test('bootstrapping new chat creates short follow-up, not another long seed',async()=>{
+  const h=harness('preparing');
+  h.getItem().bootstrapPending=true;h.getItem().bootstrapLanguage='he';
+  const result=await vm.runInContext("bootstrapChat(7,'unit-session',"+JSON.stringify(OBS)+",'he')",h.context);
+  assert.equal(result.kind,'bootstrapped',result.reason);
+  const injected=h.commands.filter(c=>c.method==='Input.insertText');
+  assert.equal(injected.length,1);assert.equal(injected[0].args.text,'תמשיך את הפיתוח');
+  assert.equal(h.commands.filter(c=>c.args.key==='ArrowUp').length,0);
+  assert.equal(h.commands.filter(c=>c.args.key==='Enter'&&c.args.type==='keyDown').length,1);
+  assert.equal(h.getItem().baseline.sentPromptSig,'bootstrap:hash');
+});
+test('bootstrap missing completion gate skips and sends no Enter or inserted text',async()=>{
+  const h=harness('preparing',{bootstrapNotReady:true});
+  const result=await vm.runInContext("bootstrapChat(7,'unit-session',"+JSON.stringify(OBS)+",'he')",h.context);
+  assert.equal(result.kind,'skip');
+  assert.equal(h.commands.filter(c=>c.args.key==='Enter').length,0);
+  assert.equal(h.commands.filter(c=>c.method==='Input.insertText').length,0);
+});
+test('bootstrap interruption after insertion holds only that chat',async()=>{
+  const h=harness('preparing',{bootstrapNotReady:true});
+  // The initial ready gate passes; the second verify fails after text injection.
+  h.writes.autopilot5_state.items[7].bootstrapPending=true;
+  const script='bootstrapChat(7,"unit-session",'+JSON.stringify(OBS)+',"he")';
+  const out=await vm.runInContext(script,h.context);
+  assert.equal(out.kind,'skip');
+  assert.equal(h.commands.filter(c=>c.args.key==='Enter').length,0);
 });

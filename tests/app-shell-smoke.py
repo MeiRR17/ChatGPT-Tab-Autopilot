@@ -3,7 +3,7 @@ import asyncio
 from pathlib import Path
 from playwright.async_api import async_playwright
 ROOT=Path(__file__).resolve().parents[1]
-USER='תמשיך את הפיתוח'
+USER='אני רוצה שתמשיך בפיתוח'
 HTML=f'''<!doctype html><html><head><meta charset="utf-8"></head><body>
 <main data-app-shell-main-surface="browser">
  <div data-app-action-timeline-scroll role="region" style="height:360px;overflow:auto">

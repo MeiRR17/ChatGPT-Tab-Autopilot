@@ -98,7 +98,7 @@
     const text=userText(turn);
     if (!text || text.length>500 || text.includes('\n\n'))
       return {ok:false,reason:'The last user message is not a short continuation request'};
-    if (!/^(?:תמשיך|המשך|continue\b|keep going\b)/iu.test(text))
+    if (!/^(?:תמשיך|המשך|אני רוצה שתמשיך|בבקשה תמשיך|אפשר להמשיך|continue\b|keep going\b|please continue\b)/iu.test(text))
       return {ok:false,reason:'Last user message is not a continuation request'};
     if (turn.querySelector('img,video,audio,[data-testid*="attachment"],[data-testid*="file-upload"]'))
       return {ok:false,reason:'Last request has an attachment'};
@@ -318,6 +318,39 @@
       equivalent(value,expectedText) && enabledSendControl();
     return {ok,seedSig:ok?semanticFingerprint(value):'',reason:ok?'':'New-chat text, focus, Send button or generation state changed'};
   }
+  // First reply after a context handoff is followed by one short user message.
+  // ArrowUp would otherwise recall the entire 7k context seed on every turn.
+  const HANDOFF_PREFIX='This is a NEW ChatGPT conversation continuing previous project work.';
+  function bootstrapState(expected){
+    const s=inspect();
+    const lastU=getTurns().filter(n=>role(n)==='user').at(-1);
+    const isHandoff=userText(lastU).startsWith(HANDOFF_PREFIX);
+    return {s,ok:s.loaded && s.stable && s.completed && !s.busy &&
+      !s.requiresAction && s.lastRole==='assistant' && s.hasComposer &&
+      isHandoff && consistent(s,expected)};
+  }
+  function bootstrapPrepare(expected){
+    const b=bootstrapState(expected),ed=composer();
+    if(!b.ok||!ed||composerText(ed))return {ok:false,reason:'Bootstrap reply not finished or composer not empty'};
+    ed.scrollIntoView({block:'nearest',inline:'nearest'});
+    const r=ed.getBoundingClientRect();
+    const x=r.left+Math.min(45,r.width/2),y=r.top+r.height/2;
+    const at=document.elementFromPoint(x,y);
+    if(r.width<20||r.height<15||!(at===ed||ed.contains(at)))return {ok:false,reason:'Bootstrap click target invalid'};
+    return {ok:true,x,y};
+  }
+  function bootstrapFocused(expected){
+    const b=bootstrapState(expected),ed=composer();
+    return {ok:b.ok && !composerText(ed) &&
+      (document.activeElement===ed||ed?.contains(document.activeElement))};
+  }
+  function bootstrapVerify(expected,prompt){
+    const b=bootstrapState(expected),ed=composer(),value=composerText(ed);
+    const ok=b.ok && !!ed && value===norm(prompt) &&
+      (document.activeElement===ed||ed.contains(document.activeElement)) &&
+      enabledSendControl();
+    return {ok,promptSig:ok?fingerprint(value):'',reason:ok?'':'Bootstrap text, focus or Send control changed'};
+  }
   function notify(){
     if(!monitoring)return;
     const s=inspect();
@@ -343,6 +376,9 @@
       case 'AP5_NEW_CHAT_PREPARE':reply(newChatPrepare());break;
       case 'AP5_NEW_CHAT_FOCUSED':reply(newChatFocused());break;
       case 'AP5_NEW_CHAT_VERIFY':reply(newChatVerify(m.expectedText));break;
+      case 'AP5_BOOTSTRAP_PREPARE':reply(bootstrapPrepare(m.expected));break;
+      case 'AP5_BOOTSTRAP_FOCUSED':reply(bootstrapFocused(m.expected));break;
+      case 'AP5_BOOTSTRAP_VERIFY':reply(bootstrapVerify(m.expected,m.prompt));break;
     }
   });
   const observer=new MutationObserver(()=>{

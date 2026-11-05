@@ -75,8 +75,8 @@ async function badge() {
   await chrome.action.setBadgeText({text:!s.enabled?'':held?'!':String(sent||'ON')});
   await chrome.action.setBadgeBackgroundColor({color:held?'#b45309':'#15803d'});
   await chrome.action.setTitle({title:s.enabled
-    ? `ChatGPT Autopilot v5.7 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
-    : 'ChatGPT Autopilot v5.7 · off · click to start; right-click for report'});
+    ? `ChatGPT Autopilot v5.7.1 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
+    : 'ChatGPT Autopilot v5.7.1 · off · click to start; right-click for report'});
 }
 async function running(session) { const s=await getState(); return s.enabled&&s.session===session; }
 async function stop(reason='Stopped by user') {
@@ -364,7 +364,7 @@ async function rotateChat(id,session,observed,settings){
       return {kind:'hold',reason:'New Chat final safety gate failed; Enter NOT attempted'};
     enterBoundary=true;
     await pressKey(target,'Enter','Enter',13,'\r');
-    return {kind:'rotated',seedSig:verified.seedSig || '',reason:'Entered new chat with bounded context excerpt'};
+    return {kind:'rotated',seedSig:verified.seedSig || '',bootstrapLanguage:/[\u0590-\u05ff]/u.test(captured.prompt)?'he':'en',reason:'Entered new chat with bounded context excerpt'};
   }catch(e){
     return {kind:(clickedNew||enterBoundary)?'hold':'skip',reason:'New chat rollover failed: '+String(e?.message||e).slice(0,180)};
   }finally{
@@ -392,7 +392,7 @@ async function inspectNewChatAck(id,session,item,tab){
       x.baseline={conversationId:obs.conversationId,userCount:obs.userCount-1,
         assistantSig:'',sentPromptSig:obs.lastUserSig,lastUserId:''};
       x.phase='await_reply';x.status='New chat acknowledged; awaiting its reply';
-      x.rotationOldId='';x.rotationSeedSig='';
+      x.rotationOldId='';x.rotationSeedSig='';x.bootstrapPending=true;
     });
     await logEvent('new_chat_acknowledged',id,'New chat initial request acknowledged');
     return;
@@ -400,6 +400,49 @@ async function inspectNewChatAck(id,session,item,tab){
   if(time()-(item.rotationStartedAt||0)>120000)
     await mark(id,session,x=>{x.phase='needs_review';x.status='New-chat handoff uncertain';
       x.reason='Do not resend automatically. Check the new conversation';});
+}
+// The initial handoff is a long user message. After it receives a completed
+// assistant reply, send ONE short continuation with physical-equivalent input
+// to bootstrap ArrowUp for subsequent turns; never replay the long handoff.
+async function bootstrapChat(id,session,observed,language){
+  const prompt=language==='he'?'תמשיך את הפיתוח':'Continue the development.';
+  const expected={conversationId:observed.conversationId,assistantSig:observed.assistantSig,
+    userCount:observed.userCount,lastUserSig:observed.lastUserSig,lastUserId:observed.lastUserId};
+  const first=await tabMessage(id,'AP5_BOOTSTRAP_PREPARE',{expected}).catch(()=>null);
+  if(!first?.ok)return {kind:'skip',reason:'Initial new-chat reply has not fully completed'};
+  if(!await preferredChatTab(id,session,expected.conversationId))return {kind:'skip',reason:'Duplicate new-chat owner'};
+  const target={tabId:id};let attached=false,inserted=false,enterBoundary=false;
+  try{
+    await chrome.debugger.attach(target,'1.3');attached=true;
+    if(!await running(session))return {kind:'skip',reason:'Monitoring stopped before bootstrap'};
+    const check=await tabMessage(id,'AP5_BOOTSTRAP_PREPARE',{expected}).catch(()=>null);
+    if(!check?.ok)return {kind:'skip',reason:'New-chat reply changed before bootstrap'};
+    await mouseClick(target,check.x,check.y);
+    const focus=await tabMessage(id,'AP5_BOOTSTRAP_FOCUSED',{expected}).catch(()=>null);
+    if(!focus?.ok)return {kind:'skip',reason:'New-chat bootstrap composer not focused'};
+    await dispatch(target,'Input.insertText',{text:prompt});inserted=true;
+    const validated=await tabMessage(id,'AP5_BOOTSTRAP_VERIFY',{expected,prompt}).catch(()=>null);
+    if(!validated?.ok)return {kind:'hold',reason:'Bootstrap input could not be verified; Enter not sent'};
+    if(!await running(session))return {kind:'hold',reason:'Stopped after bootstrap text insertion'};
+    const key=`${observed.conversationId}|${observed.userCount}|${observed.assistantSig}`;
+    const claimed=await mark(id,session,(item,state)=>{
+      if(item.phase!=='preparing'||!item.bootstrapPending||state.handledGlobally?.[key])return false;
+      state.handledGlobally ||= {};state.handledGlobally[key]={tabId:id,claimedAt:time(),bootstrap:true};
+      item.phase='sending';item.status='Bootstrap Enter may have been sent';
+      item.handledCompletionKey=key;item.sentAt=time();
+      item.baseline={conversationId:observed.conversationId,userCount:observed.userCount,
+        lastUserId:observed.lastUserId,assistantSig:observed.assistantSig,
+        sentPromptSig:validated.promptSig};
+      return true;
+    });
+    if(!claimed)return {kind:'hold',reason:'Bootstrap pre-Enter claim rejected'};
+    const again=await tabMessage(id,'AP5_BOOTSTRAP_VERIFY',{expected,prompt}).catch(()=>null);
+    if(!again?.ok || !await preferredChatTab(id,session,expected.conversationId) || !await running(session))
+      return {kind:'hold',reason:'Bootstrap final safety gate failed; Enter not attempted'};
+    enterBoundary=true;await pressKey(target,'Enter','Enter',13,'\r');
+    return {kind:'bootstrapped',reason:'New chat continuation seeded; future turns use ArrowUp'};
+  }catch(err){return {kind:(inserted||enterBoundary)?'hold':'skip',reason:String(err?.message||err).slice(0,180)};}
+  finally {if(attached)await chrome.debugger.detach(target).catch(()=>{});}
 }
 async function scanOne(id) {
   let s=await getState();
@@ -487,6 +530,38 @@ async function scanOne(id) {
     });
     return;
   }
+  // After a new-chat handoff, the initial message is long and cannot safely
+  // be recalled forever with ArrowUp. Bootstrap one short continuation once
+  // that initial reply is positively complete, then resume ordinary checks.
+  if(s.items[id]?.phase==='watching' && s.items[id]?.bootstrapPending){
+    if(!observed?.loaded || observed.busy || !observed.stable || !observed.completed ||
+       !observed.hasComposer || observed.hasDraft || observed.requiresAction || observed.lastRole!=='assistant'){
+      await mark(id,session,item=>{item.status='Waiting for initial new-chat reply; skipping';});return;
+    }
+    const created=await mark(id,session,item=>{
+      if(item.phase!=='watching'||!item.bootstrapPending)return false;
+      item.phase='preparing';item.status='Preparing short follow-up for new-chat ArrowUp';return true;
+    });
+    if(!created)return;
+    const attempted=await bootstrapChat(id,session,observed,s.items[id].bootstrapLanguage);
+    if(!await running(session))return;
+    await mark(id,session,item=>{
+      if(attempted.kind==='bootstrapped'){
+        item.phase='await_ack';item.sent++;item.bootstrapPending=false;
+        item.lastActionAt=time();item.status='Short continuation sent; awaiting acknowledgement';
+      }else if(attempted.kind==='skip'){
+        item.phase='watching';item.retryAfter=time()+3000;
+        item.status='Bootstrap skipped; retrying safely';item.reason=attempted.reason;
+      }else{
+        item.phase='needs_review';item.status='New-chat bootstrap requires review';item.reason=attempted.reason;
+      }
+    });
+    await logEvent(attempted.kind==='bootstrapped'?'bootstrap_sent':'bootstrap_skipped_or_held',
+      id,attempted.reason,attempted.kind==='hold'?'warning':'info');
+    await badge();
+    if(attempted.kind==='bootstrapped')setTimeout(()=>scheduleTab(id),900);
+    return;
+  }
   const result=await mark(id,session,item=>{
     const decision=AutopilotCore.decide(item,observed,time());
     Object.assign(item,decision.item);
@@ -521,7 +596,7 @@ async function scanOne(id) {
   const update=await mark(id,session,item=>{
     if(attempted.kind==='rotated'){
       item.phase='await_new_chat';item.status='New-chat Enter dispatched; awaiting URL and message';
-      item.rotationSeedSig=attempted.seedSig;item.sent++;
+      item.rotationSeedSig=attempted.seedSig;item.bootstrapLanguage=attempted.bootstrapLanguage||'en';item.sent++;
       item.rotationAtSent=item.sent;item.rotationCount=(item.rotationCount||0)+1;
       item.lastActionAt=time();item.sentAt=time();item.conversationId='';item.reason='';
     }else if(attempted.kind==='sent') {
@@ -585,7 +660,7 @@ async function init() {
     }
     scanAll();
   }
-  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.7.0');
+  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.7.1');
 }
 // Serialize user toggles to avoid two rapid clicks starting overlapping runs.
 function toggle(tab) {

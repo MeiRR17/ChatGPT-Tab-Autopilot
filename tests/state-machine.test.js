@@ -131,3 +131,21 @@ test('restart in sending phase refuses replay even with positive completion',()=
   assert.equal(r.item.phase,'needs_review');
   assert.equal(core.decide(r.item,ready(),NOW+10000).send,false);
 });
+
+
+test('completed first handoff reply can unlock the one-time short bootstrap',()=>{
+  const x=awaiting('await_reply');x.bootstrapPending=true;
+  x.baseline={conversationId:'/c/one',userCount:0,assistantSig:'',sentPromptSig:'long:handoff'};
+  const obs={...ready(),userCount:1,lastUserSig:'long:handoff',assistantSig:'new:first',
+    ready:false,stable:true,completed:true,busy:false};
+  const r=core.decide(x,obs,NOW+3000);
+  assert.equal(r.item.phase,'watching');
+  assert.equal(r.send,false);
+});
+test('unfinished first handoff reply cannot trigger bootstrap',()=>{
+  const x=awaiting('await_reply');x.bootstrapPending=true;
+  x.baseline={conversationId:'/c/one',userCount:0,assistantSig:'',sentPromptSig:'long:handoff'};
+  const obs={...ready(),userCount:1,lastUserSig:'long:handoff',assistantSig:'new:partial',
+    ready:false,stable:false,completed:false,busy:true};
+  assert.equal(core.decide(x,obs,NOW+3000).item.phase,'await_reply');
+});

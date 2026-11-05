@@ -1,3 +1,11 @@
+## 5.7.1 — post-handoff continuation bootstrap (2026-11-05)
+
+- Fix the newly opened chat getting stuck after its initial context handoff: wait for the first assistant reply to finish, then insert one short continuation request.
+- Once that short user turn has been acknowledged, regular ArrowUp/Enter becomes safe again.
+- Preserve all safety gates and per-completion claims; never retry ambiguous Enter.
+- Add regression tests for completed/busy handoff replies, bootstrap success, blocked bootstrap and uncertain input.
+- Accept common Hebrew continuation phrasing such as `אני רוצה שתמשיך בפיתוח`.
+
 ## 5.7.0 — automatic new-chat handoff (experimental)
 
 - Configure a per-conversation rotation threshold (default ten sends) and a delay (default 3.5 seconds) in the Activity Report.

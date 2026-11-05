@@ -1,6 +1,6 @@
 # ChatGPT Tab Autopilot
 
-**Version 5.7.0 — experimental local Chrome extension, Manifest V3.**
+**Version 5.7.1 — experimental local Chrome extension, Manifest V3.**
 
 Monitors existing ChatGPT conversations in the **same Chrome window** without switching tabs or taking over your physical keyboard/mouse. When a conversation **positively appears finished**, the extension attempts this exact sequence inside that tab:
 
@@ -102,8 +102,12 @@ The new tests are still synthetic. **Installed extension E2E and live ChatGPT E2
 
 When the same conversation URL is open in multiple monitored tabs **in the same Chrome window**, only the lowest-ID live monitored tab may send. Other copies are skipped, not marked failed; after closing or navigating away from the owner, another tab can become eligible. The guard is checked before clicking and again directly before Enter. A session-scoped durable completion claim also prevents another copy from resending the same response after the original tab closes; the claim is rolled back only if Enter was never attempted. This is a **local tab de-duplication guard**, not a distributed lock across profiles, windows or devices. Do not use multiple browser profiles to automate the same conversation.
 
-## Automatic new chat after N continuations (v5.7.0 experimental)
+## Automatic new chat after N continuations (v5.7.1 experimental)
 
 Open the extension's **Activity report**, find **Automatic new chat handoff**, and set the threshold (default: 10 successful continuation send attempts per monitored conversation) and delay before Enter (default: 3.5 s). The same tab is used. Once the threshold is reached **and the current response is positively completed**, the extension clicks the old composer, performs ArrowUp, validates the recalled prompt, clears it safely, clicks the visible **New Chat** control, waits for the new blank editor, pastes a bounded excerpt of the last assistant reply plus the previous continuation instruction, verifies the new draft, and then presses Enter.
 
 **Context limitation:** The full prior conversation is not automatically transferred. Do not use this as a substitute for an explicit project handoff or durable project state. The excerpt travels in-memory only, and is not written to local storage, diagnostics, or version control. If any step is uncertain, that tab is skipped or marked as requiring review; the other tabs continue. An interrupted rollover is *never* blindly retried.
+
+### One-time short continuation after the new chat handoff (v5.7.1)
+
+The initial handoff is long and would be incorrectly repeated by ArrowUp. When ChatGPT finishes its **first** answer in the new chat, the extension therefore sends one short language-matched continuation request using tab-local text input (Hebrew: `תמשיך את הפיתוח`; English: `Continue the development.`). It confirms the positive completion signal and Send button before that Enter, and persists a crash-safe idempotency claim. After that one-time bootstrap, the normal mouse click → ArrowUp → Enter sequence resumes. No long handoff prompt is repeatedly replayed.
