@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Tab Autopilot",
+  "version": "5.1.0",
+  "description": "Monitor ChatGPT tabs and safely continue completed conversations.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "tabs",
+    "debugger",
+    "storage",
+    "alarms",
+    "contextMenus",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "ChatGPT Autopilot: start or stop"
+  },
+  "options_page": "report.html"
+}
