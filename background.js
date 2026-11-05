@@ -50,7 +50,7 @@ async function badge() {
   await chrome.action.setBadgeText({text:!s.enabled?'':held?'!':String(sent||'ON')});
   await chrome.action.setBadgeBackgroundColor({color:held?'#b45309':'#15803d'});
   await chrome.action.setTitle({title:s.enabled
-    ? `ChatGPT Autopilot v5.1 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
+    ? `ChatGPT Autopilot v5.2 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
     : 'ChatGPT Autopilot v5.1 · off · click to start; right-click for report'});
 }
 async function running(session) { const s=await getState(); return s.enabled&&s.session===session; }
@@ -125,7 +125,15 @@ async function act(id,session,observed) {
   try {
     await chrome.debugger.attach(target,'1.3');attached=true;
     if(!await running(session))return {kind:'skip',reason:'Monitoring stopped'};
-    await mouseClick(target,prepared.x,prepared.y);
+    // Navigation can occur between PREPARE and debugger attachment.
+    const currentTab=await chrome.tabs.get(id).catch(()=>null);
+    if(!currentTab || !chatUrl(currentTab.url) ||
+       new URL(currentTab.url).pathname!==expected.conversationId)
+      return {kind:'skip',reason:'Tab navigated before mouse click'};
+    const currentPage=await tabMessage(id,'AP5_PREPARE',{expected}).catch(()=>null);
+    if(!currentPage?.ok)
+      return {kind:'skip',reason:'Page changed before mouse click'};
+    await mouseClick(target,currentPage.x,currentPage.y);
     await wait(100);
     let check=await tabMessage(id,'AP5_AFTER_CLICK',{expected});
     if(!check?.ok)return {kind:'skip',reason:check?.reason||'Click did not focus the composer'};
@@ -149,12 +157,16 @@ async function act(id,session,observed) {
     if(!await running(session))return {kind:'skip',reason:'Monitoring stopped before Enter'};
     // Enter may be delivered even if the service worker dies after this write.
     // On restart, `sending` is treated as uncertain, never blindly resent.
-    await mark(id,session,item=>{
+    const claimed=await mark(id,session,item=>{
+      if(item.phase!=='preparing')return false;
+      item.handledCompletionKey=`${observed.conversationId}|${observed.userCount}|${observed.assistantSig}`;
       item.phase='sending';item.status='Enter may have been sent; awaiting acknowledgement';
       item.sentAt=time();item.baseline={conversationId:observed.conversationId,
         userCount:observed.userCount,assistantSig:observed.assistantSig,
         sentPromptSig:observed.lastUserSig};
+      return true;
     });
+    if(claimed!==true) return {kind:'skip',reason:'Session changed before Enter'};
     enterBoundary=true;
     await pressKey(target,'Enter','Enter',13,'\r');
     return {kind:'sent'};
@@ -193,12 +205,14 @@ async function scanOne(id) {
   if(result.event) await logEvent(result.event,id,result.reason||result.status,result.level,result.name);
   if(!result.send) {
     if(result.event) await badge();
-    if(result.event==='reply_completed') setTimeout(()=>scheduleTab(id),100);
+    if(result.event==='reply_completed' || result.event==='completion_candidate')
+      setTimeout(()=>scheduleTab(id),2000);
     return;
   }
   // Crash-safe transition, scoped to this tab only. Busy tabs keep scanning elsewhere.
   const created=await mark(id,session,item=>{
-    if(item.phase!=='watching')return false;
+    if(item.phase!=='watching' || item.handledCompletionKey===
+      `${observed.conversationId}|${observed.userCount}|${observed.assistantSig}`) return false;
     item.phase='preparing';item.status='Clicking Ask ChatGPT, then ArrowUp';item.lastUpdatedAt=time();
     return true;
   });
@@ -212,7 +226,7 @@ async function scanOne(id) {
       item.sent++;item.lastActionAt=time();item.sentAt ||= time();item.reason='';
     } else if(attempted.kind==='skip') {
       item.phase='watching';item.status='Skipped a tab that was not ready';item.reason=attempted.reason;
-      item.retryAfter=time()+5000;
+      item.retryAfter=time()+2500;
     } else {
       item.phase='needs_review';item.status='Only this conversation requires review';item.reason=attempted.reason;
     }
@@ -268,7 +282,7 @@ async function init() {
     }
     scanAll();
   }
-  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.1.0');
+  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.2.0');
 }
 chrome.action.onClicked.addListener(tab=>{(async()=>{
   const s=await getState();

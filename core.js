@@ -1,11 +1,11 @@
 'use strict';
 // Deterministic state machine: NO global abort when one tab is busy or unavailable.
 const AutopilotCore = (() => {
-  const ACK_TIMEOUT_MS=60000, MAX_SENDS=100;
+  const ACK_TIMEOUT_MS=60000, MAX_SENDS=100, CONFIRM_MS=1800;
   function newItem(name,now=Date.now()){
     return {name:String(name||'Conversation').slice(0,100),phase:'watching',status:'Waiting for scan',
       reason:'',sent:0,lastUpdatedAt:now,lastActionAt:0,sentAt:0,retryAfter:0,
-      baseline:null,conversationId:''};
+      baseline:null,conversationId:'',candidateKey:'',candidateAt:0,handledCompletionKey:''};
   }
   function decide(prev,obs,now=Date.now()){
     const item={...prev};
@@ -38,6 +38,7 @@ const AutopilotCore = (() => {
         review('Conversation changed after send attempt','conversation_changed');return out;
       }
       item.conversationId=obs.conversationId;
+      item.candidateKey=''; item.candidateAt=0;
       transition('watching','Conversation changed; waiting for stability','conversation_changed');
       return out;
     }
@@ -69,7 +70,7 @@ const AutopilotCore = (() => {
       }
       const newAssistant=!!obs.assistantSig && obs.assistantSig!==item.baseline.assistantSig;
       if(newAssistant && obs.ready && obs.completed && !obs.busy && obs.lastRole==='assistant'){
-        item.baseline=null;
+        item.baseline=null; item.candidateKey=''; item.candidateAt=0;
         transition('watching','Reply completed; eligible for rescan','reply_completed');
         return out;
       }
@@ -79,19 +80,36 @@ const AutopilotCore = (() => {
     }
     if(item.sent>=MAX_SENDS){transition('limit','Per-conversation safety limit reached','safety_limit');return out;}
     // All of these are routine SKIPS, not a pause, stop or global error.
-    if(obs.busy){transition('watching','ChatGPT generating; skipping','generation_active');return out;}
+    if(obs.busy){item.candidateKey='';item.candidateAt=0;transition('watching','ChatGPT generating; skipping','generation_active');return out;}
     if(obs.hasDraft){transition('watching','Draft detected; skipping','draft_detected');return out;}
     if(obs.requiresAction){transition('watching','Manual action required; skipping','manual_action');return out;}
     if(!obs.ready || !obs.completed){
+      item.candidateKey='';item.candidateAt=0;
       transition('watching',obs.reason||'Completion unconfirmed; skipping','not_ready');return out;
     }
     if((item.retryAfter||0)>now){
       transition('watching','Temporary skip; waiting to retry','retry_cooldown');return out;
     }
-    transition('watching','Completed response; ready to send','ready');
+    // Independent samples must confirm the *same* completed assistant turn.
+    // A fleeting finished UI or transiently missing Stop button cannot arm Enter.
+    const completionKey = `${obs.conversationId}|${obs.userCount}|${obs.assistantSig}`;
+    if(item.handledCompletionKey===completionKey){
+      transition('needs_review','Completion already handled; refusing duplicate Enter',
+        'duplicate_completion_blocked','A send was already attempted for this exact response');
+      out.level='warning';return out;
+    }
+    if(item.candidateKey!==completionKey){
+      item.candidateKey=completionKey;item.candidateAt=now;
+      transition('watching','Confirming completed response across samples','completion_candidate');
+      return out;
+    }
+    if(now-item.candidateAt<CONFIRM_MS){
+      transition('watching','Confirming completed response across samples');return out;
+    }
+    transition('watching','Completed response independently confirmed; ready to send','ready');
     out.send=true;return out;
   }
-  return {newItem,decide,ACK_TIMEOUT_MS,MAX_SENDS};
+  return {newItem,decide,ACK_TIMEOUT_MS,MAX_SENDS,CONFIRM_MS};
 })();
 if(typeof self!=='undefined')self.AutopilotCore=AutopilotCore;
 if(typeof module!=='undefined')module.exports=AutopilotCore;

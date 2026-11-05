@@ -1,19 +1,16 @@
 # Changelog
 
-## 5.1.0 — 2026-11-05
+## 5.2.0 — Completion consensus and idempotent Enter guard
 
-- Added a positive **enabled Send button** gate before Enter to reduce the risk of inadvertently hitting Stop while ChatGPT is generating.
-- Localized the report UI and documentation into English; kept detection support for Hebrew continuation prompts and UI labels.
-- Documented public-repository privacy rules, experimental limitations, installation and testing.
-- Kept continuous independent per-chat monitoring, exact click → ArrowUp → Enter, and a per-chat no-duplicate state machine.
+- Require multiple independent positive confirmations of the exact same completed assistant response before attempting input.
+- Track a durable per-tab completion key at the Enter boundary so the same response cannot be sent again after a service-worker interruption.
+- Revalidate the conversation URL, composer location, and page state after attaching Chrome Debugger, before clicking.
+- Enforce a session-valid atomic claim before dispatching Enter; stale workers must not send.
+- Skip modal dialogs and unfinished `Continue generating` states.
+- Expand state-machine regression tests for completion flicker, retries, restart recovery, and duplicate prevention.
+- Preserve v5 local state/log keys for upgrades; no real chat content is recorded.
 
-## 5.0.0 — 2026-11-05 (local baseline)
+## 5.1.0
 
-- Added positive completion-action detection on the latest assistant message, beyond simply waiting for the Stop button to disappear.
-- Added independent tab monitoring with safe busy-tab skipping and late acknowledgement recovery.
-- Added 30-second recovery alarm, in-page mutation notifications and a ~2.2-second pulse.
-- Kept Chrome Debugger mouse and keyboard events and local audit-log export.
-
-## 4.x and earlier
-
-- Earlier prototypes attempted timing-based continuation and subsequently added per-tab state and a local reporting dashboard. Historical private exports and unverified run logs are intentionally excluded from the public repository.
+- Positive completion evidence and enabled Send-control gate.
+- Background-tab Chrome Debugger mouse/key input, independent tab monitoring, and local logs.

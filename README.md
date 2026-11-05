@@ -1,16 +1,16 @@
 # ChatGPT Tab Autopilot
 
-**Version 5.1.0 — experimental local Chrome extension, Manifest V3.**
+**Version 5.2.0 — experimental local Chrome extension, Manifest V3.**
 
 Monitors existing ChatGPT conversations in the **same Chrome window** without switching tabs or taking over your physical keyboard/mouse. When a conversation **positively appears finished**, the extension attempts this exact sequence inside that tab:
 
-1. Verify the latest assistant turn has completed and the page is stable (approximately 4.5 seconds).
+1. Verify the latest assistant turn has completed and the page is stable (approximately 5 seconds, followed by cross-sample confirmation).
 2. Click inside the **Ask ChatGPT** composer using Chrome Debugger input.
 3. Press **ArrowUp** once to recall the last user prompt.
 4. Verify the restored text is the same short continuation request as the last user message, and confirm the **Send** button is enabled.
 5. Press **Enter** once; wait for message acknowledgement and a **new completed assistant reply** before any subsequent send.
 
-**Busy, loading, drafting and unconfirmed conversations are skipped and rescanned.** There is no 10-minute batch delay. Each tab emits change notifications and a short periodic pulse; a 30-second recovery alarm helps after Chrome suspends background work.
+**Busy, loading, drafting and unconfirmed conversations are skipped and rescanned.** Two independent observations of the same completed reply are required before sending, and a persistent completion key blocks re-sending the same response after a crash or restart. There is no 10-minute batch delay. Each tab emits change notifications and a short periodic pulse; a 30-second recovery alarm helps after Chrome suspends background work.
 
 > **Experimental:** This is not an official OpenAI product. ChatGPT's DOM is undocumented and changes frequently. Local tests have passed, but a live ChatGPT end-to-end send has **not** been validated for this release. Never rely on it without supervision; test on one disposable chat first. It cannot guarantee no accidental interruption in every UI state.
 
@@ -67,3 +67,12 @@ Optional Chromium/Playwright smoke probes are in `tests/` and may require Python
 - **No events restored after installing a new copy:** Local storage is scoped to an extension ID. Preserve the old installation and export the old report first.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md), [`SECURITY.md`](SECURITY.md), and [`CHANGELOG.md`](CHANGELOG.md). A public repository should contain **source and synthetic evidence only**, not real user logs.
+
+## v5.2 reliability improvements
+
+- A completed assistant response must remain **exactly the same across at least two independent polls**, separated by at least 1.8 seconds (after the DOM's 5-second stability gate). This adds latency intentionally to avoid interrupting a thinking/working response.
+- Before clicking, the debugger code checks that the tab still displays the **same conversation URL** and that the composer is still eligible.
+- Before Enter, the service worker stores the exact completion key and requires a session-valid claim. If Chrome stops the worker near the Enter boundary, the extension must observe a new acknowledged user turn rather than blindly re-send.
+- Temporary UI instability never pauses the whole run: the tab is skipped and rescanned. Genuine delivery uncertainty is isolated to that conversation (`needs_review`).
+
+**Important:** A Chrome extension cannot obtain an authoritative "model finished" event from the ChatGPT web UI. These DOM checks are best-effort, not a guarantee. For workflows requiring reliable completion signals, use an API integration designed for automation rather than simulating keystrokes in the consumer UI.

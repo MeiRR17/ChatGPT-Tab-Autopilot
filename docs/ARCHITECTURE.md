@@ -10,9 +10,10 @@
 1. User starts monitoring for ChatGPT conversation tabs in the selected window.
 2. Each tab has a content-script mutation observer, short polling pulse and a longer service-worker recovery alarm.
 3. A tab is eligible only if it is loaded, no generation indicator is active, the latest assistant response has a visible completion action, its content is stable, the composer is empty, and the last user message is a short continuation prompt.
-4. After a tab-local debugger click, verify focus; send **one ArrowUp**; ensure the recovered text fingerprint matches the original user prompt and that an enabled **Send** button (not Stop) exists.
-5. Recheck immediately before Enter. Persist `sending` state first, then dispatch Enter. If worker execution ends near the Enter boundary, do **not** send twice without observing a new user message.
-6. Wait for a newly acknowledged user message, and then for a new completed assistant response. Only then consider a subsequent continuation request.
+4. Cross-sample consensus confirms the exact same response identity after the stability window, and the same conversation URL and composer are rechecked after debugger attachment.
+5. After a tab-local debugger click, verify focus; send **one ArrowUp**; ensure the recovered text fingerprint matches the original user prompt and that an enabled **Send** button (not Stop) exists.
+6. Recheck immediately before Enter. Atomically persist a completion-key lease and `sending` state before dispatching Enter. If worker execution ends near the Enter boundary, do **not** send twice without observing a new user message.
+7. Wait for a newly acknowledged user message, and then for a new completed assistant response. Only then consider a subsequent continuation request.
 
 ## Invariants
 

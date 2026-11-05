@@ -1,20 +1,34 @@
-# Test report — 2026-11-05
+# Test report — 2026-11-05 (v5.2.0)
 
 ## Automated checks
 
-Executed against the local source baseline and re-executed for v5.1.0:
+Executed locally:
 
 ```bash
 npm test
 npm run check
+python tests/dom-inspect-smoke.py
+python tests/background-tab-cdp-smoke.py
+python tests/browser-smoke.py
 ```
 
-**Observed result:** 19 of 19 Node unit checks passed; JavaScript syntax checks passed; DOM/CDP mock smoke passed; background-tab CDP smoke passed. The installed-extension Playwright E2E probe did **not** run successfully because the Chrome extension service worker did not load within the test timeout in the container. It is not counted as passing.
+**Results:** 24/24 Node tests passed. JavaScript syntax checks passed. Mock DOM/CDP input test and background-tab input test passed. The full installed-extension Playwright smoke did **not** pass: the extension service worker did not appear within the test timeout in the container. This must not be counted as successful end-to-end testing.
 
-The Node.js unit checks cover independent busy-tab skipping, positive completion gating, draft/approval/loading skip, no retries while waiting for acknowledgement/reply, late acknowledgements, interrupted Enter, per-conversation maximum send count and local extension structure. The smoke probes under `tests/` exercise simulated DOM / CDP behavior when their optional dependencies are installed.
+## Coverage
 
-**Not verified:** a complete end-to-end run on a live ChatGPT account and actual Chrome browser UI. Do not claim the extension is production-safe on this evidence alone.
+- Skip busy, loading, draft and approval states without stopping other conversations.
+- Positive completion evidence and two independent matching observations prior to input.
+- No Enter after a flickering/composition-in-progress response.
+- Durable per-completion idempotency key and uncertain-Enter recovery.
+- New assistant completion eligible after a previously handled response.
+- Short per-tab retry, acknowledgement and response state machine.
+- Real CDP-style mouse click, ArrowUp and Enter in simulated background Chromium pages.
 
-## Privacy of test records
+## Not yet validated
 
-No live user chat transcripts or actual locally exported usage logs are committed. The sample file below is fictional test data. When debugging a live installation, export logs from the extension and sanitize before sharing.
+- Installed Manifest V3 extension background worker in an interactive real Chrome profile.
+- Live ChatGPT UI selectors, tool-use/thinking transient states and real send acknowledgement.
+- Ten simultaneous live ChatGPT chats across service worker suspension/reload.
+- Limits/behavior of the current ChatGPT web service terms and account-level rate limits.
+
+Treat as **experimental**, not production-ready. Export a sanitized diagnostic report after testing a disposable chat; never publish private chat transcripts.

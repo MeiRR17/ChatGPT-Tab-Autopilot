@@ -3,7 +3,7 @@
 (() => {
   if (globalThis.__chatgptAutopilotV5) return;
   globalThis.__chatgptAutopilotV5 = true;
-  const STABLE_MS = 4500;
+  const STABLE_MS = 5000;
   const PULSE_MS = 2200;
   const norm = s => String(s ?? '').replace(/\u200b/g,'').replace(/\r/g,'').trim();
   const fingerprint = value => {
@@ -119,8 +119,13 @@
     const draft=!!composerText(ed);
     const focused=!!ed && (document.activeElement===ed || ed.contains(document.activeElement));
     const prompt=permittedPrompt(lastU);
+    // A positive completion witness must be attached to the current last assistant turn.
     const completed=completedActions(lastA);
-    const approval=needsApproval(lastA);
+    const approval=needsApproval(lastA) ||
+      !!document.querySelector('[role="dialog"][aria-modal="true"]') ||
+      [...document.querySelectorAll('button')].some(b=>visible(b) &&
+        /^(continue generating|resume generation|המשך יצירה)$/iu.test(
+          norm(b.getAttribute('aria-label')||b.textContent)));
     const ready=loaded && !!ed && !busy && !draft && !approval && stable && completed &&
       !!assistantText && lastRole==='assistant' && prompt.ok;
     let reason='';
