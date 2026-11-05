@@ -2,7 +2,7 @@
 
 - `background.js`: MV3 service worker, monitoring session, tab-level task queue, Chrome debugger input, persistence, event logging and local report entrypoint.
 - `core.js`: deterministic state machine for each conversation. A busy/unready tab remains in `watching`. `await_ack` and `await_reply` prohibit duplicate Enter during a pending response. Ambiguous Enter delivery enters `needs_review` only for that tab.
-- `content.js`: read-only DOM inspection and safe cleanup verification (chat path, last user prompt, assistant completion actions, stop/approval signals, visible composer, prompt fingerprint), and coordinate/focus assertions for the input sequence. It does not inject chat message text.
+- `content.js`: read-only DOM inspection and safe cleanup verification (chat path, last user prompt, assistant completion actions, stop/approval signals, visible composer, prompt fingerprint), and coordinate/focus assertions for the input sequence. Ordinary continuation uses physical-equivalent ArrowUp only. An intentional new-chat handoff inserts a bounded contextual seed with Chrome Debugger Input.insertText, without using the physical clipboard.
 - `report.html`, `report.js`, `report.css`: local diagnostics and CSV/JSON/Markdown export. No external telemetry.
 
 ## Sequence
@@ -39,6 +39,8 @@ ChatGPT's UI is not a stable documented API. Completion actions, editor markup, 
 
 The page's DOM can change between every check and every key event. There is no atomic server-side completion API exposed to this extension. The final page check reduces a known race but cannot eliminate that fundamental limitation. For unattended production-grade automation, use a supported API and explicit completion events rather than browser keystrokes.
 
-## Cross-tab completion claim (v5.5)
+## New Chat rollover (v5.7.0)
 
-Before interacting with a composer, the worker checks the lowest-ID live monitored tab for the conversation pathname. A second check happens just before Enter. The atomic storage mutation that enters `sending` also records `handledGlobally[conversation|userCount|assistantSignature]`. Other tabs cannot claim the same completion, even if the original tab has closed. A claim is removed only when the worker proves that Enter has **not** been attempted; an uncertain delivery stays claimed until the next explicit monitoring session. This is scoped to one extension session and Chrome window, not different profiles/devices.
+Per-tab settings control a threshold of acknowledged continuation attempts (default 10) and a 2–15-second new-chat verification delay (default 3.5s). On the next positively completed assistant response, the worker claims the original completion and uses the same tab's CDP channel to click the composer and ArrowUp. It captures the verified continuation text and the latest assistant response excerpt *in memory*, cleans the old draft after exact matching, clicks a visible New Chat control, waits for a fresh editor, inserts a bounded handoff, verifies the new text/Send button and sends one Enter. The entire previous conversation is **not** transferred.
+
+The state machine records a durable `rotating` state before navigation and `rotating_enter` before Enter. On worker restart or uncertain delivery, it quarantines only that tab rather than replaying the new-chat request. When `/c/<new id>` appears, the worker compares the last user message fingerprint with the verified handoff signature and then waits for the new completed reply. The new chat remains in the same monitored Chrome tab. No message bodies are stored in persistent state or diagnostics.

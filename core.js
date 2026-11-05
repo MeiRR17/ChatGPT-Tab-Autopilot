@@ -7,7 +7,20 @@ const AutopilotCore = (() => {
       reason:'',sent:0,lastUpdatedAt:now,lastActionAt:0,sentAt:0,retryAfter:0,
       baseline:null,conversationId:'',candidateKey:'',candidateAt:0,handledCompletionKey:''};
   }
-  function decide(prev,obs,now=Date.now()){
+  // Windowed conversation DOMs may keep the same visible user count after a
+  // new user turn. Prefer a stable user message ID when it is available.
+  function acknowledged(obs,baseline){
+    if(!baseline || obs.lastUserSig!==baseline.sentPromptSig)return false;
+    if(obs.lastUserId && baseline.lastUserId)
+      return obs.lastUserId!==baseline.lastUserId;
+    return obs.userCount===baseline.userCount+1;
+  }
+  function unexpectedUser(obs,baseline){
+    if(obs.lastUserId && baseline.lastUserId)
+      return obs.lastUserId!==baseline.lastUserId && obs.lastUserSig!==baseline.sentPromptSig;
+    return obs.userCount>baseline.userCount && obs.lastUserSig!==baseline.sentPromptSig;
+  }
+  function decide(prev,obs,now=Date.now()){ 
     const item={...prev};
     const out={item,send:false,event:'',level:'info'};
     const transition=(phase,status,event='',reason='')=>{
@@ -45,8 +58,7 @@ const AutopilotCore = (() => {
     item.conversationId ||= obs.conversationId;
     if(item.phase==='needs_review'){
       // Late acknowledgement automatically recovers a formerly uncertain Enter.
-      if(item.baseline && item.sentAt && obs.userCount===item.baseline.userCount+1 &&
-        obs.lastUserSig===item.baseline.sentPromptSig && obs.conversationId===item.conversationId){
+      if(item.baseline && item.sentAt && acknowledged(obs,item.baseline) && obs.conversationId===item.conversationId){
         transition('await_reply','Message acknowledged; waiting for completed reply','late_ack_recovered');
       }
       return out;
@@ -54,9 +66,9 @@ const AutopilotCore = (() => {
     if(item.phase==='limit')return out;
     if(item.phase==='await_ack'){
       if(!item.baseline){review('Send verification baseline missing','missing_baseline');return out;}
-      if(obs.userCount===item.baseline.userCount+1 && obs.lastUserSig===item.baseline.sentPromptSig){
+      if(acknowledged(obs,item.baseline)){
         transition('await_reply','Message acknowledged; awaiting reply','send_acknowledged');
-      } else if(obs.userCount>item.baseline.userCount){
+      } else if(unexpectedUser(obs,item.baseline)){
         review('Different user message appeared after send','ack_mismatch');
       } else if(now-item.sentAt>ACK_TIMEOUT_MS){
         review('Enter not acknowledged; refusing duplicate send','ack_timeout');
@@ -65,7 +77,7 @@ const AutopilotCore = (() => {
     }
     if(item.phase==='await_reply'){
       if(!item.baseline){review('Reply baseline missing','missing_baseline');return out;}
-      if(obs.userCount!==item.baseline.userCount+1 || obs.lastUserSig!==item.baseline.sentPromptSig){
+      if(!acknowledged(obs,item.baseline)){
         review('User message changed while awaiting reply','external_interference');return out;
       }
       const newAssistant=!!obs.assistantSig && obs.assistantSig!==item.baseline.assistantSig;

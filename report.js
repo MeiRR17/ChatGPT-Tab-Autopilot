@@ -2,6 +2,7 @@
 const STATE_KEY = 'autopilot5_state';
 const LOG_KEY = 'autopilot5_logs';
 const LEGACY_KEY = 'autopilot5_previous_snapshot';
+const SETTINGS_KEY = 'autopilot5_settings';
 let state = {enabled: false, tabIds: [], items: {}};
 let logs = [];
 let legacy = null;
@@ -88,6 +89,19 @@ function renderLegacy() {
   $('legacy').textContent = `Previous-version snapshot: ${items.length} conversations, ${total} sends in previous session. Prior logs import only if the extension ID stays the same.`;
 }
 function render() { renderSummary(); renderTabs(); refreshFilter(); renderLogs(); renderLegacy(); }
+async function loadRotationSettings(){
+  const settings=(await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY]||{};
+  $('rotateEnabled').checked=settings.rotateEnabled!==false;
+  $('rotateAfter').value=settings.rotateAfter||10;
+  $('rotateDelay').value=(settings.rotateDelayMs||3500)/1000;
+}
+$('saveRotation').addEventListener('click',async()=>{
+  const resp=await chrome.runtime.sendMessage({type:'AP5_SETTINGS',settings:{
+    rotateEnabled:$('rotateEnabled').checked,rotateAfter:Number($('rotateAfter').value),
+    rotateDelayMs:Math.round(Number($('rotateDelay').value)*1000)}});
+  $('rotationSaved').textContent=resp?.ok?'Saved':'Could not save settings';
+  if(resp?.ok)await loadRotationSettings();
+});
 async function refresh() {
   const found = await chrome.storage.local.get([STATE_KEY, LOG_KEY, LEGACY_KEY]);
   state = found[STATE_KEY] || state; logs = found[LOG_KEY] || []; legacy = found[LEGACY_KEY] || null;
@@ -103,7 +117,7 @@ function download(name, mime, content) {
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 function exportJson() {
   download(`autopilot-report-${stamp()}.json`, 'application/json;charset=utf-8',
-    JSON.stringify({exportedAt: new Date().toISOString(), version: '5.4.0',
+    JSON.stringify({exportedAt: new Date().toISOString(), version: '5.7.0',
       note: 'Conversation message bodies are not logged; v4 logs are imported only from the same extension ID.',
       state, legacySnapshot: legacy, totalSavedEvents: logs.length, logs}, null, 2));
 }
@@ -147,4 +161,5 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes[LEGACY_KEY]) legacy = changes[LEGACY_KEY].newValue || null;
   render();
 });
+loadRotationSettings().catch(()=>{});
 refresh().catch(err => { $('state-pill').textContent = `Unable to load: ${err.message}`; });

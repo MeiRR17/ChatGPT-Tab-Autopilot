@@ -7,6 +7,16 @@ const OLD_LOG_KEY = 'autopilot4_logs';
 const MENU = 'autopilot5_open_report';
 const ALARM = 'autopilot5_recovery';
 const MAX_LOGS = 5000;
+const SETTINGS_KEY = 'autopilot5_settings';
+const DEFAULT_SETTINGS = Object.freeze({rotateEnabled:true,rotateAfter:10,rotateDelayMs:3500});
+const clamp = (v,min,max,def) => Number.isInteger(Number(v)) ? Math.min(max,Math.max(min,Number(v))) : def;
+async function getSettings(){
+  const data=(await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY]||{};
+  return {rotateEnabled:data.rotateEnabled!==false,
+    rotateAfter:clamp(data.rotateAfter,1,100,10),
+    rotateDelayMs:clamp(data.rotateDelayMs,2000,15000,3500)};
+}
+
 const DEFAULT = () => ({enabled:false, windowId:null, session:'', tabIds:[], items:{},
   discardFlags:{}, handledGlobally:{}, startedAt:0, stoppedAt:0, reason:''});
 const locks = new Set(), queued = new Set();
@@ -19,19 +29,19 @@ const chatUrl = url => {
     /^\/(?:g\/[^/]+\/)?c\/[^/]+/.test(u.pathname); } catch { return false; }
 };
 const tabMessage = (id,type,extra={}) => chrome.tabs.sendMessage(id,{type,...extra},{frameId:0});
-// A duplicate conversation must have exactly one input owner per Chrome window.
-// Owner selection is based on live tabs, not stale in-memory navigation records.
-// Fail closed if the tab query is unavailable; recheck after claiming Enter.
+// Multiple tabs may display the SAME conversation. Only the lowest-ID monitored,
+// live tab is allowed to interact with its composer. Fail closed if tab listing
+// is unavailable; this guard is repeated immediately before Enter.
 async function preferredChatTab(id, session, conversationId) {
-  const state=await getState();
-  if(!state.enabled || state.session!==session || !state.tabIds.includes(id))return false;
+  const state = await getState();
+  if (!state.enabled || state.session !== session || !state.tabIds.includes(id)) return false;
   try {
-    const tabs=await chrome.tabs.query({windowId:state.windowId});
-    const candidates=tabs.filter(tab=>state.tabIds.includes(tab.id) &&
-      !tab.discarded && chatUrl(tab.url) && new URL(tab.url).pathname===conversationId);
+    const tabs = await chrome.tabs.query({windowId:state.windowId});
+    const candidates = tabs.filter(tab => state.tabIds.includes(tab.id) &&
+      !tab.discarded && chatUrl(tab.url) && new URL(tab.url).pathname === conversationId);
     candidates.sort((a,b)=>a.id-b.id);
-    return candidates[0]?.id===id;
-  }catch{return false;}
+    return candidates[0]?.id === id;
+  } catch { return false; }
 }
 async function getState() { return (await chrome.storage.local.get(STATE_KEY))[STATE_KEY] || DEFAULT(); }
 function mutateState(fn) {
@@ -65,8 +75,8 @@ async function badge() {
   await chrome.action.setBadgeText({text:!s.enabled?'':held?'!':String(sent||'ON')});
   await chrome.action.setBadgeBackgroundColor({color:held?'#b45309':'#15803d'});
   await chrome.action.setTitle({title:s.enabled
-    ? `ChatGPT Autopilot v5.6 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
-    : 'ChatGPT Autopilot v5.6 · off · click to start; right-click for report'});
+    ? `ChatGPT Autopilot v5.7 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
+    : 'ChatGPT Autopilot v5.7 · off · click to start; right-click for report'});
 }
 async function running(session) { const s=await getState(); return s.enabled&&s.session===session; }
 async function stop(reason='Stopped by user') {
@@ -153,7 +163,8 @@ async function clearRestoredPrompt(target,id,expected) {
 }
 async function act(id,session,observed) {
   const expected={conversationId:observed.conversationId,assistantSig:observed.assistantSig,
-    userCount:observed.userCount,lastUserSig:observed.lastUserSig};
+    userCount:observed.userCount,lastUserSig:observed.lastUserSig,
+    lastUserId:observed.lastUserId};
   let prepared;
   try { prepared=await tabMessage(id,'AP5_PREPARE',{expected}); }
   catch { return {kind:'skip',reason:'Page reloaded; skipping'}; }
@@ -204,13 +215,14 @@ async function act(id,session,observed) {
       const completionKey=`${observed.conversationId}|${observed.userCount}|${observed.assistantSig}`;
       wholeState.handledGlobally ||= {};
       if(wholeState.handledGlobally[completionKey])return false;
-      // Persist a session-scoped claim across tab closure; another copy must not
-      // replay a response if Enter may already have been dispatched.
+      // A durable claim survives tab closure. Other copies of the same chat
+      // must not replay this response even if its original tab disappears.
       wholeState.handledGlobally[completionKey]={tabId:id,claimedAt:time()};
       item.handledCompletionKey=completionKey;
       item.phase='sending';item.status='Enter may have been sent; awaiting acknowledgement';
       item.sentAt=time();item.baseline={conversationId:observed.conversationId,
-        userCount:observed.userCount,assistantSig:observed.assistantSig,
+        userCount:observed.userCount,lastUserId:observed.lastUserId,
+        assistantSig:observed.assistantSig,
         sentPromptSig:observed.lastUserSig};
       return true;
     });
@@ -257,12 +269,153 @@ async function act(id,session,observed) {
     if(attached)await chrome.debugger.detach(target).catch(()=>{});
   }
 }
+// Rollover is deliberately confined to the same physical Chrome tab.
+// The old prompt is recovered by ArrowUp, verified, and cleared BEFORE clicking
+// New Chat. A bounded excerpt of the last assistant response is transferred
+// in memory only: a new conversation does not inherit old history.
+function handoffText(lastPrompt,excerpt){
+  const prior=String(excerpt||'').slice(-7000);
+  const task=String(lastPrompt||'').slice(0,500);
+  if(!prior.trim() || !task.trim())return '';
+  return `This is a NEW ChatGPT conversation continuing previous project work. The prior conversation is not available here. Use only the following excerpt, do not invent missing details.\n\nPrevious assistant response (excerpt):\n${prior}\n\nPrevious user continuation instruction:\n${task}\n\nContinue that work from the available evidence. State any essential missing context clearly.`;
+}
+async function rotateChat(id,session,observed,settings){
+  const expected={conversationId:observed.conversationId,assistantSig:observed.assistantSig,
+    userCount:observed.userCount,lastUserSig:observed.lastUserSig,lastUserId:observed.lastUserId};
+  const first=await tabMessage(id,'AP5_PREPARE',{expected}).catch(()=>null);
+  if(!first?.ok)return {kind:'skip',reason:first?.reason||'Conversation is not yet ready for rotation'};
+  if(!await preferredChatTab(id,session,expected.conversationId))
+    return {kind:'skip',reason:'Duplicate conversation has another owner'};
+  const target={tabId:id};let attached=false,clickedNew=false,enterBoundary=false,arrowAttempt=false;
+  try{
+    await chrome.debugger.attach(target,'1.3');attached=true;
+    if(!await running(session))return {kind:'skip',reason:'Monitoring stopped before rotation'};
+    const before=await tabMessage(id,'AP5_PREPARE',{expected}).catch(()=>null);
+    if(!before?.ok)return {kind:'skip',reason:'Page changed before rotation'};
+    await mouseClick(target,before.x,before.y);
+    const focused=await tabMessage(id,'AP5_AFTER_CLICK',{expected}).catch(()=>null);
+    if(!focused?.ok)return {kind:'skip',reason:'Composer not focused; skipping rollover'};
+    arrowAttempt=true;await pressKey(target,'ArrowUp','ArrowUp',38);
+    await wait(200);
+    const checked=await tabMessage(id,'AP5_AFTER_UP',{expected}).catch(()=>null);
+    if(!checked?.ok)return {kind:'skip',reason:'ArrowUp did not safely recall the prompt'};
+    const captured=await tabMessage(id,'AP5_ROLLOVER_CAPTURE',{expected}).catch(()=>null);
+    if(!captured?.ok)return {kind:'skip',reason:'Could not capture verified prompt and prior context'};
+    const seed=handoffText(captured.prompt,captured.assistantExcerpt);
+    if(!seed)return {kind:'skip',reason:'Missing context; refusing to create contextless new chat'};
+    // Require the exact recalled prompt to be cleared so the old chat retains
+    // no unsent draft. Do not clear text that the user has changed.
+    if(!await clearRestoredPrompt(target,id,expected))
+      return {kind:'skip',reason:'Could not clean verified recalled prompt; preserving old chat'};
+    arrowAttempt=false;
+    const newChat=await tabMessage(id,'AP5_FIND_NEW_CHAT').catch(()=>null);
+    if(!newChat?.ok)return {kind:'skip',reason:newChat?.reason||'New Chat control not found'};
+    // Durable pre-navigation claim: if Chrome crashes mid-transfer, the
+    // extension never replays the same assistant completion blindly.
+    const key=`${observed.conversationId}|${observed.userCount}|${observed.assistantSig}`;
+    const claimed=await mark(id,session,(item,s)=>{
+      if(item.phase!=='preparing'||s.handledGlobally?.[key])return false;
+      s.handledGlobally ||= {};s.handledGlobally[key]={tabId:id,claimedAt:time(),rollover:true};
+      item.phase='rotating';item.status='Opening new ChatGPT conversation';
+      item.rotationOldId=expected.conversationId;
+      item.rotationStartedAt=time();item.handledCompletionKey=key;
+      return true;
+    });
+    if(!claimed)return {kind:'skip',reason:'Rotation claim lost; skipping'};
+    // Do not click a control that became invalid between DOM lookup and use.
+    if(!await running(session))return {kind:'hold',reason:'Monitoring stopped near new-chat navigation'};
+    const current=await tabMessage(id,'AP5_FIND_NEW_CHAT').catch(()=>null);
+    if(!current?.ok)return {kind:'hold',reason:'New Chat disappeared after rollover claim'};
+    clickedNew=true;
+    await mouseClick(target,current.x,current.y);
+    let ready=null;
+    for(let i=0;i<30;i++){
+      if(!await running(session))return {kind:'hold',reason:'Monitoring stopped during new chat navigation'};
+      await wait(350);
+      try {ready=await tabMessage(id,'AP5_NEW_CHAT_PREPARE');}
+      catch {
+        // A full navigation discards the content script; only reinject into
+        // the verified ChatGPT origin, not into unrelated websites.
+        const tab=await chrome.tabs.get(id).catch(()=>null);
+        if(tab && /^https:\/\/(?:chatgpt\.com|chat\.openai\.com)\//.test(tab.url||''))
+          await chrome.scripting.executeScript({target:{tabId:id},files:['content.js']}).catch(()=>{});
+      }
+      if(ready?.ok)break;
+    }
+    if(!ready?.ok)return {kind:'hold',reason:'New Chat did not load; no Enter attempted'};
+    await mouseClick(target,ready.x,ready.y);
+    const newFocus=await tabMessage(id,'AP5_NEW_CHAT_FOCUSED').catch(()=>null);
+    if(!newFocus?.ok)return {kind:'hold',reason:'New chat composer not focused'};
+    // CDP text input belongs to the target tab; it does not touch the OS
+    // clipboard or keyboard and works even when Chrome is in the background.
+    await dispatch(target,'Input.insertText',{text:seed});
+    await wait(settings.rotateDelayMs);
+    const verified=await tabMessage(id,'AP5_NEW_CHAT_VERIFY',{expectedText:seed}).catch(()=>null);
+    if(!verified?.ok)return {kind:'hold',reason:verified?.reason||'New chat text validation failed; Enter not sent'};
+    if(!await running(session))return {kind:'hold',reason:'Stopped before new-chat Enter'};
+    // Persist intent before Enter; uncertain delivery is never retried blindly.
+    const marked=await mark(id,session,item=>{
+      if(item.phase!=='rotating')return false;
+      item.phase='rotating_enter';item.status='New-chat Enter may be dispatched';return true;
+    });
+    if(!marked)return {kind:'hold',reason:'Rollover session changed before Enter'};
+    const final=await tabMessage(id,'AP5_NEW_CHAT_VERIFY',{expectedText:seed}).catch(()=>null);
+    if(!final?.ok || !await running(session))
+      return {kind:'hold',reason:'New Chat final safety gate failed; Enter NOT attempted'};
+    enterBoundary=true;
+    await pressKey(target,'Enter','Enter',13,'\r');
+    return {kind:'rotated',seedSig:verified.seedSig || '',reason:'Entered new chat with bounded context excerpt'};
+  }catch(e){
+    return {kind:(clickedNew||enterBoundary)?'hold':'skip',reason:'New chat rollover failed: '+String(e?.message||e).slice(0,180)};
+  }finally{
+    if(attached&&arrowAttempt&&!clickedNew&&!enterBoundary&&await running(session))
+      await clearRestoredPrompt(target,id,expected).catch(()=>false);
+    if(attached)await chrome.debugger.detach(target).catch(()=>{});
+  }
+}
+async function inspectNewChatAck(id,session,item,tab){
+  // During new-chat creation the URL can temporarily be '/' rather than '/c/id'.
+  if(!chatUrl(tab?.url)) {
+    if(time()-(item.rotationStartedAt||0)>120000)
+      await mark(id,session,x=>{x.phase='needs_review';x.status='New-chat delivery not confirmed';
+        x.reason='Check whether the initial handoff message was sent';});
+    return;
+  }
+  const obs=await tabMessage(id,'AP5_INSPECT').catch(()=>null);
+  if(!obs?.loaded)return;
+  const valid=obs.lastUserSemanticSig===item.rotationSeedSig && obs.userCount>=1 &&
+    obs.conversationId!==item.rotationOldId;
+  if(valid){
+    await mark(id,session,x=>{
+      if(x.phase!=='await_new_chat')return;
+      x.conversationId=obs.conversationId;
+      x.baseline={conversationId:obs.conversationId,userCount:obs.userCount-1,
+        assistantSig:'',sentPromptSig:obs.lastUserSig,lastUserId:''};
+      x.phase='await_reply';x.status='New chat acknowledged; awaiting its reply';
+      x.rotationOldId='';x.rotationSeedSig='';
+    });
+    await logEvent('new_chat_acknowledged',id,'New chat initial request acknowledged');
+    return;
+  }
+  if(time()-(item.rotationStartedAt||0)>120000)
+    await mark(id,session,x=>{x.phase='needs_review';x.status='New-chat handoff uncertain';
+      x.reason='Do not resend automatically. Check the new conversation';});
+}
 async function scanOne(id) {
   let s=await getState();
   if(!s.enabled||!s.items[id]) return;
   const session=s.session;
   let tab;
   try {tab=await chrome.tabs.get(id);}catch{tab=null;}
+  if(s.items[id].phase==='await_new_chat' && tab && tab.windowId===s.windowId){
+    await inspectNewChatAck(id,session,s.items[id],tab);return;
+  }
+  if(['rotating','rotating_enter'].includes(s.items[id].phase)){
+    await mark(id,session,item=>{item.phase='needs_review';
+      item.status='Rollover interrupted; check this conversation';
+      item.reason='Do not retry a partially completed new-chat transition automatically';});
+    return;
+  }
   if(!tab||!chatUrl(tab.url)||tab.windowId!==s.windowId){
     // Navigating away is an ordinary skip, NOT a failure of every monitored
     // conversation. Preserve uncertain delivery only if an Enter might have
@@ -307,8 +460,8 @@ async function scanOne(id) {
     } catch { /* Page may still be loading; recovery alarm will retry. */ }
   }
   if(!await running(session)) return;
-  // A duplicate tab never receives input for an already-handled response,
-  // including after the original tab has been closed.
+  // A duplicated ChatGPT conversation must never receive two independent
+  // continuation attempts. The secondary tab stays monitored and retryable.
   if(observed?.conversationId && s.items[id]?.phase==='watching') {
     const fresh=await getState();
     const key=`${observed.conversationId}|${observed.userCount}|${observed.assistantSig}`;
@@ -326,7 +479,7 @@ async function scanOne(id) {
   if(observed?.conversationId && s.items[id]?.phase==='watching' &&
      !await preferredChatTab(id,session,observed.conversationId)) {
     await mark(id,session,item=>{
-      if(item.phase==='watching'){
+      if(item.phase==='watching') {
         item.status='Duplicate conversation; another tab is the input owner';
         item.reason='Skipping this copy; it will become eligible if the owner closes';
         item.candidateKey='';item.candidateAt=0;
@@ -357,11 +510,21 @@ async function scanOne(id) {
     return true;
   });
   if(!created) return;
-  await logEvent('send_preparing',id,'Click composer → ArrowUp → verify text → Enter', 'info',result.name);
-  const attempted=await act(id,session,observed);
+  const settings=await getSettings();
+  const rollover=settings.rotateEnabled &&
+    (s.items[id].sent-(s.items[id].rotationAtSent||0))>=settings.rotateAfter;
+  await logEvent(rollover?'rollover_preparing':'send_preparing',id,
+    rollover?'Click composer → ArrowUp → New Chat → context handoff → Enter':
+      'Click composer → ArrowUp → verify text → Enter','info',result.name);
+  const attempted=rollover?await rotateChat(id,session,observed,settings):await act(id,session,observed);
   if(!await running(session))return;
   const update=await mark(id,session,item=>{
-    if(attempted.kind==='sent') {
+    if(attempted.kind==='rotated'){
+      item.phase='await_new_chat';item.status='New-chat Enter dispatched; awaiting URL and message';
+      item.rotationSeedSig=attempted.seedSig;item.sent++;
+      item.rotationAtSent=item.sent;item.rotationCount=(item.rotationCount||0)+1;
+      item.lastActionAt=time();item.sentAt=time();item.conversationId='';item.reason='';
+    }else if(attempted.kind==='sent') {
       item.phase='await_ack';item.status='Enter dispatched; awaiting acknowledgement';
       item.sent++;item.lastActionAt=time();item.sentAt ||= time();item.reason='';
     } else if(attempted.kind==='skip') {
@@ -373,13 +536,13 @@ async function scanOne(id) {
     item.lastUpdatedAt=time();return {name:item.name};
   });
   if(update){
-    const event=attempted.kind==='sent'?'send_enter':attempted.kind==='skip'?'send_skipped':'tab_needs_review';
+    const event=attempted.kind==='rotated'?'new_chat_enter':attempted.kind==='sent'?'send_enter':attempted.kind==='skip'?'send_skipped':'tab_needs_review';
     await logEvent(event,id,attempted.reason||(attempted.kind==='sent'?'Awaiting continuation message acknowledgement':'Skipped without sending'),
       attempted.kind==='hold'?'warning':'info',update.name);
     await badge();
   }
   // Rescan quickly; further waits are event-driven, never a 10 minute loop.
-  if(attempted.kind==='sent') setTimeout(()=>scheduleTab(id),900);
+  if(['sent','rotated'].includes(attempted.kind)) setTimeout(()=>scheduleTab(id),900);
 }
 async function scheduleTab(id) {
   if(locks.has(id)){queued.add(id);return;}
@@ -422,7 +585,7 @@ async function init() {
     }
     scanAll();
   }
-  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.6.0');
+  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.7.0');
 }
 // Serialize user toggles to avoid two rapid clicks starting overlapping runs.
 function toggle(tab) {
@@ -446,6 +609,14 @@ chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
   }
   if(['AP5_WAKE','AP5_TICK'].includes(msg.type)&&Number.isInteger(sender.tab?.id)) {
     scheduleTab(sender.tab.id);return;
+  }
+  if(msg.type==='AP5_SETTINGS' && sender.id===chrome.runtime.id && !sender.tab){
+    (async()=>{
+      const settings={rotateEnabled:msg.settings?.rotateEnabled!==false,
+        rotateAfter:clamp(msg.settings?.rotateAfter,1,100,10),
+        rotateDelayMs:clamp(msg.settings?.rotateDelayMs,2000,15000,3500)};
+      await chrome.storage.local.set({[SETTINGS_KEY]:settings});respond({ok:true,settings});
+    })().catch(err=>respond({ok:false,error:String(err)}));return true;
   }
   if(msg.type==='AP5_TOGGLE' && sender.id===chrome.runtime.id && !sender.tab){
     (async()=>{

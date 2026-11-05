@@ -1,21 +1,24 @@
-# v5.6.0 verification notes
+# Test report — v5.7.0 (2026-11-05)
 
-- Offline Node tests: 49/49 passed locally before commit; rerun in CI.
-- Local full-extension test: **blocked by managed Chromium policy** (`ExtensionInstallBlocklist: ["*"]`), not a definitive extension regression.
-- Added `Chrome Extension Integration` workflow to install Playwright's bundled Chromium in GitHub Actions. Status must be confirmed from the new commit's run; do not claim it has passed merely because the workflow exists.
-- Browser fixture: locally intercepted, synthetic chat pages; checks busy/ready/duplicate tab behaviors and native Chrome Debugger input.
-- Logged-in ChatGPT E2E: **not performed**. No real account secrets or chat text are used in CI.
-- Release remains experimental until installed extension CI and supervised live tests pass.
+## Current local verification
+
+- `npm test`: **55/55 passed** (Node 22 offline unit and worker-regression tests).
+- `npm run check`: **PASSED** (all extension JavaScript syntax).
+- `python tests/app-shell-smoke.py`: **PASSED** — synthetic modern ChatGPT DOM, CDP click/ArrowUp/Enter.
+- `python tests/new-chat-dom-smoke.py`: **PASSED** — synthetic browser New Chat navigation, old prompt recall, editor focus, CDP Input.insertText, and one Enter.
+- Installed full Chrome extension against an authenticated ChatGPT account: **NOT PERFORMED**.
+- GitHub Actions: must be rechecked after pushing this commit.
+
+## Scope and limits
+
+Browser smokes use local synthetic pages; no live authenticated ChatGPT session was accessed. The New Chat transition depends on undocumented DOM selectors and chat-history truncation is inherent to a new conversation. This release is experimental: do not enable unattended operation on sensitive work until a user-validated live Chrome test passes. If an ambiguous Enter or navigation occurs, the extension holds only that conversation and never blindly resends.
+
+---
 
 # Test report — v5.5.0 (2026-11-05)
 
-- Node offline suite: **49/49 passed locally**.
-- JavaScript syntax check: passed.
-- Headless Chromium installed-extension smoke: **NOT VERIFIED** (service worker never registered; timed out after 15 seconds).
-- Authenticated ChatGPT E2E: **NOT PERFORMED**.
-- GitHub Actions: pending on new commit.
-- New coverage: duplicated chat tab owner selection, persistent per-completion guard across tab close, rollback when Enter was not attempted.
-- Never treat synthetic results as proof of production readiness.
+The v5.5 cycle adds duplicate-conversation ownership checks and offline regression tests.
+No live ChatGPT automation was executed in this environment; installed-extension E2E remains an unresolved release gate.
 
 # Test report — v5.4.0 (2026-11-05)
 

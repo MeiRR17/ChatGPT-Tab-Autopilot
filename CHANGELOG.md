@@ -1,9 +1,11 @@
-## [5.6.0] - 2026-11-05
+## 5.7.0 — automatic new-chat handoff (experimental)
 
-- Add GitHub Actions integration job that installs Playwright's bundled Chromium and the real unpacked Manifest V3 extension.
-- Extend browser smoke test to cover generating chat, ready chat and duplicate of the same conversation with real tab-scoped CDP mouse / ArrowUp / Enter inputs.
-- Explicitly document local Chromium's managed extension installation policy as the cause of earlier registration timeouts, rather than misclassifying this as a proven extension defect.
-- Keep logged-in ChatGPT validation as a separate, pending release gate.
+- Configure a per-conversation rotation threshold (default ten sends) and a delay (default 3.5 seconds) in the Activity Report.
+- On the next confirmed completed assistant response after the threshold, click Ask ChatGPT, use ArrowUp to recall the latest continuation request, verify and capture it in memory, and safely clear the old composer.
+- Click the actual visible New Chat control via Chrome Debugger, wait for a fresh empty composer, focus it with a mouse click, enter a bounded context handoff and validate it before Enter.
+- A new chat **cannot** inherit all prior history; only the latest assistant excerpt and last continuation request are transferred, with a warning to the model about missing history. No conversation bodies are stored in the local event log or GitHub.
+- On interrupted or ambiguous navigation, fail closed for only the affected chat. Do not repeat uncertain Enter automatically.
+- Extend DOM readiness checks for the modern ChatGPT application shell.
 
 ## [5.5.0] - 2026-11-05
 
@@ -11,7 +13,7 @@
 - Keep duplicate tabs in the scan set: skip only the secondary input owner, without stopping global monitoring.
 - Revalidate ownership before mouse input and after the persistent pre-Enter claim.
 - Persist a per-conversation completion claim across tab closure, preventing a second copy from replaying a response; roll back only if Enter was never attempted.
-- Add seven regression tests for duplicate skip, owner selection, navigation, persisted claims and rollback.
+- Add regression tests for duplicate skip, deterministic owner selection, and owner navigation.
 - Preserve fail-closed behavior: no Enter on ambiguous ownership.
 
 # Changelog

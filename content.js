@@ -11,10 +11,16 @@
     for (const ch of text) { h^=ch.charCodeAt(0); h=Math.imul(h,16777619); }
     return `${text.length}:${(h>>>0).toString(16)}`;
   };
+  const semanticFingerprint = value => fingerprint(norm(value).replace(/\s+/gu,' '));
   const onChat = () => /^\/(?:g\/[^/]+\/)?c\/[^/]+/.test(location.pathname);
   const visible = el => !!el && el.isConnected && el.getClientRects().length > 0 &&
     getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
-  const composerSelectors = ['#prompt-textarea[contenteditable="true"]',
+  // Modern ChatGPT uses a ProseMirror editor rather than #prompt-textarea.
+  // Keep the composer scoped to a ChatGPT form; never focus an unrelated editor.
+  const composerSelectors = [
+    'form[data-chatgpt-composer] [data-composer-markdown][contenteditable="true"][role="textbox"]',
+    'form [data-composer-markdown][contenteditable="true"]',
+    '#prompt-textarea[contenteditable="true"]',
     '[data-testid="composer-text-input"][contenteditable="true"]',
     'form [role="textbox"][contenteditable="true"]', 'form [contenteditable="true"]',
     '#prompt-textarea', 'form textarea'];
@@ -26,26 +32,67 @@
     return null;
   };
   const composerText = el => norm(el ? (el.isContentEditable ? el.innerText : el.value) : '');
+  // The October 2026 app shell groups the user and assistant into a single
+  // [data-turn-key] container and uses :user / :assistant search units. Legacy
+  // article/section turn wrappers are retained on older accounts.
+  let detectedLayout='none';
   function getTurns() {
-    // ChatGPT has used both section[data-turn] and data-message-author-role; never mix both lists.
-    for (const selector of [
-      'section[data-turn="user"], section[data-turn="assistant"]',
+    const timeline=document.querySelector('[data-app-action-timeline-scroll][role="region"]') ||
+      document.querySelector('[data-app-action-timeline-scroll]');
+    const modernRoot=timeline || document;
+    const modern=[...modernRoot.querySelectorAll(
+      '[data-content-search-unit-key$=":user"], [data-content-search-unit-key$=":assistant"]')]
+      .filter(visible).filter(node => !node.parentElement?.closest('[data-content-search-unit-key]'));
+    if(modern.length){detectedLayout='app-shell';return modern;}
+    // Do not accidentally stop at a selection containing *only* user turns
+    // when another selector can see both message roles.
+    const candidates=[
+      'article[data-turn="user"],article[data-turn="assistant"],section[data-turn="user"],section[data-turn="assistant"]',
       '[data-testid^="conversation-turn-"][data-turn="user"], [data-testid^="conversation-turn-"][data-turn="assistant"]',
       '[data-message-author-role="user"], [data-message-author-role="assistant"]'
-    ]) {
-      const matches = [...document.querySelectorAll(selector)].filter(visible);
-      if (matches.length) return matches;
+    ];
+    let best=[];
+    for(const selector of candidates){
+      const nodes=[...document.querySelectorAll(selector)].filter(visible);
+      if(nodes.some(n=>role(n)==='user') && nodes.some(n=>role(n)==='assistant')){
+        detectedLayout='classic';return nodes;
+      }
+      if(nodes.length>best.length)best=nodes;
     }
-    return [];
+    detectedLayout=best.length?'partial-legacy':'unknown';
+    return best;
   }
   function role(turn) {
-    return turn?.getAttribute('data-turn') || turn?.getAttribute('data-message-author-role') || '';
+    const direct=turn?.getAttribute('data-turn') || turn?.getAttribute('data-message-author-role');
+    if(direct==='user'||direct==='assistant')return direct;
+    const key=turn?.getAttribute('data-content-search-unit-key')||'';
+    if(key.endsWith(':user'))return 'user';
+    if(key.endsWith(':assistant'))return 'assistant';
+    return '';
   }
   function userText(turn) {
-    if (!turn) return '';
+    if(!turn)return '';
+    const bubble=turn.matches?.('[data-user-message-bubble]') ? turn :
+      turn.querySelector('[data-user-message-bubble]');
+    if(bubble)return norm(bubble.innerText||bubble.textContent);
     const blocks=[...turn.querySelectorAll('[data-testid="user-message"],.whitespace-pre-wrap')];
     const top=blocks.filter(n => !blocks.some(other => other!==n && other.contains(n)));
     return norm(top.length ? top.map(n=>n.innerText||'').join('\n') : turn.innerText||'');
+  }
+  function assistantText(turn){
+    if(!turn)return '';
+    const contents=[...turn.querySelectorAll(
+      '[data-markdown-text-style="assistant-message"],.markdown,.prose')]
+      .filter(node=>!node.parentElement?.closest('[data-markdown-text-style="assistant-message"],.markdown,.prose'));
+    return norm(contents.length?contents.map(node=>node.innerText||node.textContent||'').join('\n'):
+      turn.innerText||turn.textContent||'');
+  }
+  function turnId(turn){
+    if(!turn)return '';
+    return turn.closest('[data-turn-key]')?.getAttribute('data-turn-key') ||
+      turn.getAttribute('data-message-id') ||
+      turn.getAttribute('data-chatgpt-search-message-ids') ||
+      turn.getAttribute('data-turn-id') || '';
   }
   function permittedPrompt(turn) {
     const text=userText(turn);
@@ -73,10 +120,14 @@
   function completedActions(lastAssistant) {
     if (!lastAssistant) return false;
     // A positive finished-response action must belong to the *last* assistant turn.
-    const wrapper=lastAssistant.closest('section[data-turn],[data-testid^="conversation-turn-"],[data-turn-key]') || lastAssistant;
+    const wrapper=lastAssistant.closest('[data-turn-key],article[data-turn],section[data-turn],[data-testid^="conversation-turn-"]') || lastAssistant;
     const actionSelectors=['button[data-testid="copy-turn-action-button"]',
-      '[data-turn-key] .turn-action-controls button', '.turn-action-controls button'];
-    return actionSelectors.some(sel=>[...wrapper.querySelectorAll(sel)].some(visible));
+      '.turn-action-controls button'];
+    // A user-message copy button in the same modern turn is NOT evidence that
+    // its assistant response finished. Require a control at/after the assistant.
+    return actionSelectors.some(sel=>[...wrapper.querySelectorAll(sel)].some(button=>
+      visible(button) && (lastAssistant.contains(button) ||
+      !!(lastAssistant.compareDocumentPosition(button)&Node.DOCUMENT_POSITION_FOLLOWING))));
   }
   function enabledSendControl() {
     // Fail closed if the composer is still showing Stop or an unknown action.
@@ -107,8 +158,11 @@
     const users=turns.filter(n=>role(n)==='user');
     const assistants=turns.filter(n=>role(n)==='assistant');
     const lastA=assistants.at(-1), lastU=users.at(-1), lastRole=role(turns.at(-1));
-    const assistantText=norm(lastA?.innerText);
-    const assistantSig=lastA ? `${assistants.length}:${fingerprint(assistantText)}` : '';
+    const textOfAssistant=assistantText(lastA);
+    const assistantIdentity=lastA?.getAttribute('data-chatgpt-search-message-ids') || turnId(lastA);
+    // Stable identity protects against virtualized turn counts and identical
+    // text produced in separate responses.
+    const assistantSig=lastA ? `${assistantIdentity||assistants.length}:${fingerprint(textOfAssistant)}` : '';
     const busy=generationActive();
     if(lastPath!==location.pathname || lastSignature!==assistantSig || lastTurnCount!==turns.length){
       lastPath=location.pathname;lastSignature=assistantSig;lastTurnCount=turns.length;lastChangeAt=now;
@@ -119,34 +173,41 @@
     const draft=!!composerText(ed);
     const focused=!!ed && (document.activeElement===ed || ed.contains(document.activeElement));
     const prompt=permittedPrompt(lastU);
+    const lastUserId=turnId(lastU);
+    const diagnostics={layout:detectedLayout,visibleUsers:users.length,
+      visibleAssistants:assistants.length,composerFound:!!ed,
+      hasCompletionAction:false};
     // A positive completion witness must be attached to the current last assistant turn.
     const completed=completedActions(lastA);
+    diagnostics.hasCompletionAction=completed;
     const approval=needsApproval(lastA) ||
       !!document.querySelector('[role="dialog"][aria-modal="true"]') ||
       [...document.querySelectorAll('button')].some(b=>visible(b) &&
         /^(continue generating|resume generation|המשך יצירה)$/iu.test(
           norm(b.getAttribute('aria-label')||b.textContent)));
     const ready=loaded && !!ed && !busy && !draft && !approval && stable && completed &&
-      !!assistantText && lastRole==='assistant' && prompt.ok;
+      !!textOfAssistant && lastRole==='assistant' && prompt.ok;
     let reason='';
     if(!loaded)reason='Waiting for page load';
     else if(!ed)reason='Ask ChatGPT composer not found';
     else if(busy)reason='ChatGPT is still generating; skipping';
     else if(approval)reason='Manual approval required; skipping';
     else if(draft)reason='Composer contains a draft; skipping';
-    else if(lastRole!=='assistant'||!assistantText)reason='Waiting for assistant reply; skipping';
+    else if(lastRole!=='assistant'||!textOfAssistant)reason=`Assistant reply not visible in DOM (layout=${detectedLayout}, user=${users.length}, assistant=${assistants.length}); skipping`;
     else if(!completed)reason='No positive evidence the response completed; skipping';
     else if(!prompt.ok)reason=prompt.reason;
     else if(!stable)reason='Waiting for completed response to stabilize';
     return {conversation:onChat(),conversationId:location.pathname,loaded,hasComposer:!!ed,
       busy,completed,stable,hasDraft:draft,focused,requiresAction:approval,ready,reason,
-      assistantSig,userCount:users.length,lastRole,
+      assistantSig,userCount:users.length,lastRole,lastUserId,diagnostics,
       lastUserSig:lastU?fingerprint(userText(lastU)):'',
+      lastUserSemanticSig:lastU?semanticFingerprint(userText(lastU)):'',
       allowedPromptSig:prompt.ok?fingerprint(prompt.text):''};
   }
   function consistent(s,e){return s.conversationId===e?.conversationId &&
     s.assistantSig===e?.assistantSig && s.userCount===e?.userCount &&
-    s.lastUserSig===e?.lastUserSig;}
+    s.lastUserSig===e?.lastUserSig &&
+    (!e?.lastUserId || s.lastUserId===e.lastUserId);}
   function prepare(expected){
     const s=inspect();
     if(!s.ready || !consistent(s,expected))return {ok:false,reason:s.reason||'Conversation state changed'};
@@ -196,6 +257,67 @@
       !!value && fingerprint(value)===expected.lastUserSig;
     return {ok:safe,modifier:/Mac/i.test(navigator.platform)?'Meta':'Control'};
   }
+  function rolloverCapture(expected){
+    const s=inspect();const ed=composer(),value=composerText(ed);
+    if(!s.completed || s.busy || !s.focused || !consistent(s,expected) ||
+       !value || fingerprint(value)!==expected.lastUserSig ||
+       value!==permittedPrompt(getTurns().filter(n=>role(n)==='user').at(-1)).text)
+      return {ok:false,reason:'Unverified last user prompt; refusing contextless rollover'};
+    const lastAssistant=getTurns().filter(n=>role(n)==='assistant').at(-1);
+    const excerpt=assistantText(lastAssistant).slice(-7000);
+    if(!excerpt)return {ok:false,reason:'Latest assistant reply unavailable'};
+    // Only in message response, never in local storage or exported logs.
+    return {ok:true,prompt:value,assistantExcerpt:excerpt};
+  }
+  function findNewChat(){
+    const selectors=['[data-testid="new-chat-button"]','a[aria-label="New chat"]',
+      'button[aria-label="New chat"]','a[title="New chat"]',
+      'a[href="/"][data-testid*="new-chat"]','button[data-testid*="new-chat"]'];
+    const candidates=[];
+    for(const sel of selectors)candidates.push(...document.querySelectorAll(sel));
+    candidates.push(...[...document.querySelectorAll('a,button')].filter(el=>
+      /^(new chat|new conversation|צ[׳']אט חדש|שיחה חדשה|צור שיחה חדשה)$/iu.test(
+        norm(el.getAttribute('aria-label')||el.getAttribute('title')||el.textContent))));
+    for(const el of candidates){
+      if(!visible(el))continue;
+      const r=el.getBoundingClientRect();
+      if(r.width<8||r.height<8)continue;
+      const x=r.left+r.width/2,y=r.top+r.height/2;
+      const at=document.elementFromPoint(x,y);
+      if(x<1||x>innerWidth-1||y<1||y>innerHeight-1||
+         !(at===el||el.contains(at)))continue;
+      return {ok:true,x,y};
+    }
+    return {ok:false,reason:'Visible New Chat button not found in current UI'};
+  }
+  function newChatPrepare(){
+    if(onChat())return {ok:false,reason:'Still in old conversation'};
+    if(document.readyState!=='complete'||generationActive())
+      return {ok:false,reason:'New Chat still loading'};
+    const ed=composer();if(!ed||composerText(ed)||
+       document.querySelector('[role="dialog"][aria-modal="true"]'))
+      return {ok:false,reason:'New Chat editor not ready/empty'};
+    const r=ed.getBoundingClientRect();
+    const x=r.left+Math.min(40,r.width/2),y=r.top+r.height/2;
+    const at=document.elementFromPoint(x,y);
+    if(r.width<20||r.height<15||!at||!(at===ed||ed.contains(at)))
+      return {ok:false,reason:'New Chat composer click position invalid'};
+    return {ok:true,x,y};
+  }
+  function newChatFocused(){
+    const ed=composer();return {ok:!!ed&&!onChat()&&!composerText(ed)&&
+      (document.activeElement===ed||ed.contains(document.activeElement))};
+  }
+  function newChatVerify(expectedText){
+    const ed=composer(),value=composerText(ed);
+    // ProseMirror can render blank paragraphs as additional line breaks.
+    const equivalent=(a,b)=>norm(a).replace(/\n{2,}/g,'\n\n')===norm(b).replace(/\n{2,}/g,'\n\n');
+    const ok=!onChat() && !!ed &&
+      (document.activeElement===ed||ed.contains(document.activeElement)) &&
+      !generationActive() && !document.querySelector('[role="dialog"][aria-modal="true"]') &&
+      equivalent(value,expectedText) && enabledSendControl();
+    return {ok,seedSig:ok?semanticFingerprint(value):'',reason:ok?'':'New-chat text, focus, Send button or generation state changed'};
+  }
   function notify(){
     if(!monitoring)return;
     const s=inspect();
@@ -216,6 +338,11 @@
       case 'AP5_AFTER_UP':reply(afterUp(m.expected));break;
       case 'AP5_BEFORE_ENTER':reply(beforeEnter(m.expected));break;
       case 'AP5_CLEANUP_CHECK':reply(cleanupCheck(m.expected));break;
+      case 'AP5_ROLLOVER_CAPTURE':reply(rolloverCapture(m.expected));break;
+      case 'AP5_FIND_NEW_CHAT':reply(findNewChat());break;
+      case 'AP5_NEW_CHAT_PREPARE':reply(newChatPrepare());break;
+      case 'AP5_NEW_CHAT_FOCUSED':reply(newChatFocused());break;
+      case 'AP5_NEW_CHAT_VERIFY':reply(newChatVerify(m.expectedText));break;
     }
   });
   const observer=new MutationObserver(()=>{
@@ -223,7 +350,8 @@
     notifyTimer=setTimeout(()=>{notifyTimer=null;notify();},220);
   });
   observer.observe(document.documentElement,{subtree:true,childList:true,characterData:true,
-    attributes:true,attributeFilter:['aria-label','disabled','data-state','aria-busy','data-testid']});
+    attributes:true,attributeFilter:['aria-label','disabled','data-state','aria-busy','data-testid','data-turn-key',
+      'data-content-search-unit-key','data-user-message-bubble','data-composer-markdown']});
   setInterval(()=>{
     if(!monitoring)return;
     notify();chrome.runtime.sendMessage({type:'AP5_TICK'}).catch(()=>{});
