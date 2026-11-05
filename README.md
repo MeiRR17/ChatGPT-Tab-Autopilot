@@ -1,6 +1,6 @@
 # ChatGPT Tab Autopilot
 
-**Version 5.3.0 — experimental local Chrome extension, Manifest V3.**
+**Version 5.4.0 — experimental local Chrome extension, Manifest V3.**
 
 Monitors existing ChatGPT conversations in the **same Chrome window** without switching tabs or taking over your physical keyboard/mouse. When a conversation **positively appears finished**, the extension attempts this exact sequence inside that tab:
 
@@ -56,7 +56,7 @@ npm test
 npm run check
 ```
 
-Optional Chromium/Playwright smoke probes are in `tests/` and may require Python, Playwright and a local Chromium installation. They are **not** substitutes for a live-account validation.
+Optional Chromium/Playwright smoke probes are in `tests/` and may require Python, Playwright and a local Chromium installation. `AUTOPILOT_HEADED=1` runs the installed-extension smoke with a real display (for example under Xvfb); this has not passed in the present container. They are **not** substitutes for a live-account validation.
 
 ## Troubleshooting
 
@@ -87,3 +87,13 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TEST_REPORT.md`](docs
 - **Serialized start/stop.** Rapid toolbar/report toggles cannot create two competing monitoring sessions.
 
 These changes do **not** make the Chrome UI an authoritative completion signal. The extension remains experimental and must be validated against the current ChatGPT website before broad use.
+
+## v5.4: recovery, CSV safety and reproducible CI
+
+- If ArrowUp restores the exact last continuation text but **completion becomes unconfirmed**, cancel Enter and attempt a narrowly scoped cleanup of only that exact recalled text. Previously this failure path could strand a draft and cause endless skips. If its origin cannot be confirmed, **no cleanup takes place**; the conversation will wait for manual attention while other tabs continue.
+- Never issue a blind Escape when ArrowUp does not yield a valid composer: this could otherwise dismiss a human-controlled interface.
+- If a continuation was **already acknowledged**, navigating away while waiting for its answer is a temporary skip, not an uncertain-Enter quarantine. Returning to the same chat resumes monitoring.
+- CSV export now neutralizes spreadsheet formula prefixes in untrusted tab names/event descriptions.
+- A GitHub Actions workflow runs `npm run check`, `npm test` and packages the unpacked extension. No live ChatGPT data or credentials are used in CI.
+
+The new tests are still synthetic. **Installed extension E2E and live ChatGPT E2E are pending** and must not be represented as passed.

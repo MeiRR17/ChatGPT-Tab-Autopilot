@@ -1,4 +1,31 @@
-# Test report — 2026-11-05 (v5.3.0)
+# Test report — v5.4.0 (2026-11-05)
+
+## Results in this build container
+
+| Verification | Status |
+| --- | --- |
+| `npm test` | **36/36 passed** (offline Node tests) |
+| `npm run check` | **Passed** (JavaScript syntax) |
+| Manifest V3 and package assertions | **Passed** (included in Node tests) |
+| Two separate background-tab CDP simulations | **Not re-run for this version**; older v5.3 smoke results remain historical only |
+| Installed-extension Chromium E2E | **NOT VERIFIED** (service worker not registered under headless; optional headed run also timed out) |
+| Authenticated ChatGPT E2E | **NOT PERFORMED** |
+| GitHub Actions workflow | **Added**; hosted CI result must be checked after pushing |
+
+## New regression scenarios
+
+- `AP5_AFTER_UP` rejected even after ArrowUp: *only* an exactly verified recalled prompt is cleared, with no Enter.
+- Refused ArrowUp result plus non-matching human draft: no cleanup, Escape, or Enter.
+- Temporary navigation after an **acknowledged** continuation retains `await_reply` (no false uncertain-delivery hold).
+- Local CSV export prevents spreadsheet formulas via untrusted tab titles, retains CSV escaping and strips control characters.
+
+## Release limitations
+
+No test exercises a logged-in ChatGPT page. ChatGPT's UI does not provide a supported completion notification and may change; **the extension is still experimental, and this CI is not proof of safe unattended operation**. Validate with one disposable chat before enabling the intended 10-tab workflow. Synthetic and historical tests must remain labeled separately from live E2E.
+
+---
+
+## Previous release (v5.3.0) — historical results
 
 ## Executed locally
 

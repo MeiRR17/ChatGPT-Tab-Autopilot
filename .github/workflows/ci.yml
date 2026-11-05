@@ -1,0 +1,42 @@
+name: Extension CI
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extension-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node 22 checks and package audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax and Manifest V3 validation
+        run: npm run check
+      - name: Offline unit and regression tests
+        run: npm test
+      - name: Build an unpacked-extension ZIP
+        run: |
+          mkdir -p dist
+          zip -q -r dist/ChatGPT-Tab-Autopilot.zip \
+            manifest.json background.js content.js core.js \
+            report.html report.css report.js report-utils.js icons/
+          unzip -t dist/ChatGPT-Tab-Autopilot.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-tab-autopilot-unpacked
+          path: dist/ChatGPT-Tab-Autopilot.zip
+          if-no-files-found: error
+          retention-days: 14

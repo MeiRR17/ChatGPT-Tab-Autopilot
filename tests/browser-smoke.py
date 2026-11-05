@@ -1,7 +1,7 @@
 """Real Chromium + installed unpacked extension, mocked ChatGPT pages, not a live account.
 Test two independent tabs: one busy, one ready, ensure mouse/Up/Enter and no overlap.
 """
-import asyncio, json, tempfile
+import asyncio, json, tempfile, os
 from pathlib import Path
 from playwright.async_api import async_playwright
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +50,7 @@ async def main():
     async with async_playwright() as pw:
         with tempfile.TemporaryDirectory() as profile:
             ctx=await pw.chromium.launch_persistent_context(profile,
-                executable_path='/usr/bin/chromium',headless=True,
+                executable_path=os.getenv('AUTOPILOT_CHROMIUM','/usr/bin/chromium'),headless=os.getenv('AUTOPILOT_HEADED')!='1',
                 args=[f'--disable-extensions-except={ROOT}',f'--load-extension={ROOT}',
                       '--no-sandbox','--disable-gpu','--disable-dev-shm-usage'])
             try:

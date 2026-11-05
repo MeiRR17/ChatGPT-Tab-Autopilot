@@ -1,5 +1,15 @@
 # Changelog
 
+## 5.4.0 — safety recovery & CI (2026-11-05)
+
+- Recover a verified ArrowUp recall after an unsuccessful post-ArrowUp gate; protect human drafts.
+- Remove blind Escape on an invalid ArrowUp result.
+- Preserve `await_reply` across temporary navigation after an acknowledged send.
+- Mitigate CSV formula injection in local activity exports.
+- Add offline GitHub Actions CI and package artifact, plus regression tests.
+- Live ChatGPT installed-extension E2E is still unverified.
+
+
 ## 5.3.0 — Last-moment Enter gate, safe draft cleanup and lifecycle recovery
 
 - Revalidate completion and the exact conversation URL **after** persisting the pre-Enter state; roll back safely without Enter if the page changes.

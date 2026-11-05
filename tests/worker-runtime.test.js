@@ -30,7 +30,7 @@ function harness(phase='watching',options={}){
           case 'AP5_INSPECT':if(options.inspectionFailure)throw Error('No receiver');return {...OBS};
           case 'AP5_PREPARE':return {ok:true,x:30,y:30};
           case 'AP5_AFTER_CLICK':return {ok:true};
-          case 'AP5_AFTER_UP':return {ok:true};
+          case 'AP5_AFTER_UP':return {ok:!options.failAfterUp,reason:options.failAfterUp?'Completion gate failed':'',editorEmpty:!options.cleanupSafe};
           case 'AP5_BEFORE_ENTER':before++;return {ok:before!==(options.failBeforeEnterAt||-1)};
           case 'AP5_CLEANUP_CHECK':return {ok:!!options.cleanupSafe,modifier:options.cleanupModifier||'Control'};
           default:return {ok:true};
@@ -114,4 +114,32 @@ test('missing content script is reinjected at most once per 10-second window',as
   await vm.runInContext('scanOne(7)',h.context);
   assert.equal(h.getInjections(),1);
   assert.equal(h.getItem().phase,'watching');
+});
+
+test('failed AFTER_UP gate cleans an exact restored prompt and does not Enter',async()=>{
+  const h=harness('preparing',{failAfterUp:true,cleanupSafe:true});
+  const result=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
+  assert.equal(result.kind,'skip');
+  const keys=h.commands.filter(c=>c.method==='Input.dispatchKeyEvent').map(c=>c.args);
+  assert.equal(keys.filter(k=>k.key==='ArrowUp' && k.type==='keyDown').length,1);
+  assert.equal(keys.filter(k=>k.key==='Enter').length,0);
+  assert.equal(keys.filter(k=>k.key==='Backspace' && k.type==='keyDown').length,1);
+});
+test('failed AFTER_UP gate never clears an unverified human draft',async()=>{
+  const h=harness('preparing',{failAfterUp:true,cleanupSafe:false});
+  const result=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
+  assert.equal(result.kind,'skip');
+  const keys=h.commands.filter(c=>c.method==='Input.dispatchKeyEvent').map(c=>c.args);
+  assert.equal(keys.filter(k=>k.key==='Enter').length,0);
+  assert.equal(keys.filter(k=>k.key==='Backspace').length,0);
+  assert.equal(keys.filter(k=>k.key==='Escape').length,0);
+});
+test('navigating away while awaiting an acknowledged reply remains retryable',async()=>{
+  const h=harness('await_reply',{url:'https://chatgpt.com/'});
+  h.getItem().baseline={conversationId:'/c/one',userCount:0,assistantSig:OBS.assistantSig,sentPromptSig:OBS.lastUserSig};
+  await vm.runInContext('scanOne(7)',h.context);
+  assert.equal(h.getItem().phase,'await_reply');
+  h.setUrl('https://chatgpt.com/c/one');
+  await vm.runInContext('scanOne(7)',h.context);
+  assert.equal(h.getItem().phase,'await_reply');
 });

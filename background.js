@@ -51,8 +51,8 @@ async function badge() {
   await chrome.action.setBadgeText({text:!s.enabled?'':held?'!':String(sent||'ON')});
   await chrome.action.setBadgeBackgroundColor({color:held?'#b45309':'#15803d'});
   await chrome.action.setTitle({title:s.enabled
-    ? `ChatGPT Autopilot v5.3 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
-    : 'ChatGPT Autopilot v5.3 · off · click to start; right-click for report'});
+    ? `ChatGPT Autopilot v5.4 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
+    : 'ChatGPT Autopilot v5.4 · off · click to start; right-click for report'});
 }
 async function running(session) { const s=await getState(); return s.enabled&&s.session===session; }
 async function stop(reason='Stopped by user') {
@@ -144,7 +144,7 @@ async function act(id,session,observed) {
   try { prepared=await tabMessage(id,'AP5_PREPARE',{expected}); }
   catch { return {kind:'skip',reason:'Page reloaded; skipping'}; }
   if(!prepared?.ok) return {kind:'skip',reason:prepared?.reason||'Conversation changed'};
-  const target={tabId:id};let attached=false,enterBoundary=false,restoredPrompt=false;
+  const target={tabId:id};let attached=false,enterBoundary=false,arrowUpAttempted=false;
   try {
     await chrome.debugger.attach(target,'1.3');attached=true;
     if(!await running(session))return {kind:'skip',reason:'Monitoring stopped'};
@@ -161,18 +161,18 @@ async function act(id,session,observed) {
     let check=await tabMessage(id,'AP5_AFTER_CLICK',{expected});
     if(!check?.ok)return {kind:'skip',reason:check?.reason||'Click did not focus the composer'};
     if(!await running(session))return {kind:'skip',reason:'Monitoring stopped'};
+    arrowUpAttempted=true;
     await pressKey(target,'ArrowUp','ArrowUp',38);
     await wait(180);
     check=await tabMessage(id,'AP5_AFTER_UP',{expected});
     if(!check?.ok) {
       // Do not send Enter when ArrowUp opened message editing, did nothing or
       // the assistant started producing again. Skip this tab, keep others running.
-      if(check?.editorEmpty) {
-        try { await pressKey(target,'Escape','Escape',27); } catch {}
-      }
+      // No blind Escape: ArrowUp may have opened a different ChatGPT editor.
+      // The finally block checks if a precisely matched recall can be cleaned.
       return {kind:'skip',reason:check?.reason||'ArrowUp did not recall the prompt'};
     }
-    restoredPrompt=true;
+
     if(!await running(session))return {kind:'skip',reason:'Monitoring stopped before Enter'};
     // Last-moment independent gate: must STILL have a completed assistant
     // response and the exact same restored message focused in the composer.
@@ -218,7 +218,7 @@ async function act(id,session,observed) {
     // We know no Enter was attempted. Do not leave our recalled text in the
     // user's composer after an unrelated safety gate failed. A human-edited
     // field is never cleared; only an exact fingerprint match is eligible.
-    if(attached && restoredPrompt && !enterBoundary && await running(session)) {
+    if(attached && arrowUpAttempted && !enterBoundary && await running(session)) {
       try {
         const clean=await clearRestoredPrompt(target,id,expected);
         if(!clean)await logEvent('draft_cleanup_skipped',id,
@@ -241,9 +241,17 @@ async function scanOne(id) {
     // conversation. Preserve uncertain delivery only if an Enter might have
     // been sent in this tab. Returning to a chat can resume watching.
     await mark(id,session,item=>{
-      if(['sending','await_ack','await_reply','needs_review'].includes(item.phase)) {
-        item.phase='needs_review';item.status='Conversation unavailable after attempted send';
+      if(['sending','await_ack'].includes(item.phase)) {
+        item.phase='needs_review';item.status='Conversation unavailable near an unconfirmed Enter';
         item.reason='Open the original conversation to confirm delivery';
+      } else if(item.phase==='await_reply') {
+        // The user's continuation was already acknowledged. Navigation must not
+        // turn a known delivery into a false uncertain-delivery incident.
+        item.status='Awaiting reply; original chat temporarily unavailable';
+        item.reason='Return to the same conversation to resume confirmation';
+      } else if(item.phase==='needs_review') {
+        // Preserve the original reason, not a new generic navigation warning.
+        item.status='Only this conversation requires review';
       } else {
         item.phase='watching';item.status='Outside a supported conversation; skipping';
         item.reason='Tab is closed or navigating; will retry when available';
@@ -359,7 +367,7 @@ async function init() {
     }
     scanAll();
   }
-  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.3.0');
+  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.4.0');
 }
 // Serialize user toggles to avoid two rapid clicks starting overlapping runs.
 function toggle(tab) {
