@@ -59,7 +59,29 @@ async function scan(id) {
     const next=AutopilotCore.decide(entry,obs);
     if(next.reason!==entry.reason || next.phase!==entry.phase)record(id,next.phase,next.reason);
     state.tabs[id]=entry=next;await persist();
-    if(entry.phase==='ready' && obs)await sendSequence(id,obs,entry);
+    if(entry.phase==='ready' && obs){
+      // Require the same completed assistant evidence across multiple observations.
+      const stamp=obs.assistant+':'+obs.users+':'+obs.lastUser;
+      if(!entry.stability || entry.stability.stamp!==stamp){
+        entry.stability={stamp,since:Date.now()};
+        entry.phase='watching';entry.reason='Confirming completed response remains stable';
+        await persist();return;
+      }
+      if(Date.now()-entry.stability.since<4500){
+        entry.phase='watching';entry.reason='Waiting for completion stability';
+        await persist();return;
+      }
+      // The final observation is repeated before all synthetic input is sent.
+      const confirmation=await observe(id);
+      if(!confirmation || confirmation.busy || !confirmation.complete || !confirmation.ready ||
+        confirmation.assistant!==obs.assistant || confirmation.lastUser!==obs.lastUser){
+        entry.stability=null;entry.phase='watching';await persist();return;
+      }
+      entry.stability=null;
+      await sendSequence(id,confirmation,entry);
+    } else if(obs && (obs.busy || !obs.complete || !obs.ready)){
+      entry.stability=null;await persist();
+    }
   }catch(e){record(id,'scan_error',e.message);await persist()}finally{busyTabs.delete(id);}
 }
 async function all() {
