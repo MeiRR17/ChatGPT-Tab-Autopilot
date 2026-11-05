@@ -1,9 +1,27 @@
-# Architecture
+# Architecture and operating model
 
-Chrome MV3 service worker (`background.js`) coordinates eligible tabs in the window selected by the user. A content script (`content.js`) observes composer state, assistant messages and visible response controls. `core.js` implements per-tab state decisions. `report.html` and `report.js` display local event records.
+- `background.js`: MV3 service worker, monitoring session, tab-level task queue, Chrome debugger input, persistence, event logging and local report entrypoint.
+- `core.js`: deterministic state machine for each conversation. A busy/unready tab remains in `watching`. `await_ack` and `await_reply` prohibit duplicate Enter during a pending response. Ambiguous Enter delivery enters `needs_review` only for that tab.
+- `content.js`: read-only DOM inspection (chat path, last user prompt, assistant completion actions, stop/approval signals, visible composer, prompt fingerprint), and coordinate/focus assertions for the input sequence. It does not inject chat message text.
+- `report.html`, `report.js`, `report.css`: local diagnostics and CSV/JSON/Markdown export. No external telemetry.
 
-## State transitions
+## Sequence
 
-`watching` → `preparing` → `await_ack` → `await_reply` → `watching`. A tab still generating stays in `watching` or `await_reply`; it is not stopped. A failed focus or unrecognized ArrowUp recall returns to watching. An Enter whose delivery is uncertain must not be retried blindly.
+1. User starts monitoring for ChatGPT conversation tabs in the selected window.
+2. Each tab has a content-script mutation observer, short polling pulse and a longer service-worker recovery alarm.
+3. A tab is eligible only if it is loaded, no generation indicator is active, the latest assistant response has a visible completion action, its content is stable, the composer is empty, and the last user message is a short continuation prompt.
+4. After a tab-local debugger click, verify focus; send **one ArrowUp**; ensure the recovered text fingerprint matches the original user prompt and that an enabled **Send** button (not Stop) exists.
+5. Recheck immediately before Enter. Persist `sending` state first, then dispatch Enter. If worker execution ends near the Enter boundary, do **not** send twice without observing a new user message.
+6. Wait for a newly acknowledged user message, and then for a new completed assistant response. Only then consider a subsequent continuation request.
 
-The scheduler reacts to DOM notifications and periodic checks, not a global ten-minute cycle. A tab that is busy does not block a ready tab. The Chrome debugger is attached only to the target tab while sending an input sequence.
+## Invariants
+
+- Never use Ctrl+Tab or take over the physical keyboard/mouse.
+- No global stop on busy/unready tabs.
+- Never press Enter solely because text stopped changing or a Stop button disappeared.
+- Never retry an ambiguous Enter on the same chat automatically.
+- Never overwrite a draft or send arbitrary user text.
+
+## Known limitations
+
+ChatGPT's UI is not a stable documented API. Completion actions, editor markup, send-button labels and ArrowUp behavior may change. Background-tab timers may be throttled; Chrome may unload service workers. The checks aim to fail closed but cannot guarantee zero false positives. E2E against a real account is still pending.

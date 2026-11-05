@@ -1,104 +1,322 @@
 'use strict';
 importScripts('core.js');
-const KEY='autopilot_v51';
-let state={running:false,windowId:null,tabs:{},events:[]};
-let busyTabs=new Set(), queued=new Set(), timer=null;
-async function persist(){await chrome.storage.local.set({[KEY]:state});}
-async function restore(){const v=await chrome.storage.local.get(KEY);if(v[KEY])state=v[KEY];}
-function record(tabId,type,detail=''){state.events.push({at:new Date().toISOString(),tabId,type,detail:String(detail).slice(0,150)});state.events=state.events.slice(-3000);}
-function eligible(url){try{const u=new URL(url);return ['chatgpt.com','chat.openai.com'].includes(u.hostname) && /^\/(c\/|g\/[^/]+\/c\/)/.test(u.pathname)}catch{return false}}
-async function observe(id){try{return await chrome.tabs.sendMessage(id,{type:'INSPECT'});}catch{return null;}}
-function keyEvent(type,key,code,keyCode){return chrome.debugger.sendCommand({tabId:this},'Input.dispatchKeyEvent',{type,key,code,windowsVirtualKeyCode:keyCode,nativeVirtualKeyCode:keyCode});}
-async function press(id,key,code,keyCode){await chrome.debugger.sendCommand({tabId:id},'Input.dispatchKeyEvent',{type:'rawKeyDown',key,code,windowsVirtualKeyCode:keyCode,nativeVirtualKeyCode:keyCode});await chrome.debugger.sendCommand({tabId:id},'Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode:keyCode,nativeVirtualKeyCode:keyCode});}
-const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-async function sendSequence(id,obs,entry) {
-  let attached=false, entered=false;
+const STATE_KEY = 'autopilot5_state';
+const LOG_KEY = 'autopilot5_logs';
+const OLD_STATE_KEY = 'autopilot4_state';
+const OLD_LOG_KEY = 'autopilot4_logs';
+const MENU = 'autopilot5_open_report';
+const ALARM = 'autopilot5_recovery';
+const MAX_LOGS = 5000;
+const DEFAULT = () => ({enabled:false, windowId:null, session:'', tabIds:[], items:{},
+  discardFlags:{}, startedAt:0, stoppedAt:0, reason:''});
+const locks = new Set(), queued = new Set();
+let stateQueue = Promise.resolve(), logQueue = Promise.resolve();
+const time = () => Date.now();
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const chatUrl = url => {
+  try { const u=new URL(url); return ['chatgpt.com','chat.openai.com'].includes(u.hostname) &&
+    /^\/(?:g\/[^/]+\/)?c\/[^/]+/.test(u.pathname); } catch { return false; }
+};
+const tabMessage = (id,type,extra={}) => chrome.tabs.sendMessage(id,{type,...extra},{frameId:0});
+async function getState() { return (await chrome.storage.local.get(STATE_KEY))[STATE_KEY] || DEFAULT(); }
+function mutateState(fn) {
+  const current = stateQueue.then(async()=>{
+    const s=await getState();
+    const before=JSON.stringify(s);
+    const out=fn(s);
+    if(JSON.stringify(s)!==before) await chrome.storage.local.set({[STATE_KEY]:s});
+    return out;
+  });
+  stateQueue=current.catch(err=>console.error('AP5 state',err));
+  return current;
+}
+function logEvent(event,tabId=null,message='',level='info',title='') {
+  const job = logQueue.then(async()=>{
+    const prev=(await chrome.storage.local.get(LOG_KEY))[LOG_KEY]||[];
+    const row={timestamp:new Date().toISOString(),event:String(event).slice(0,65),
+      tabId:Number.isInteger(tabId)?tabId:null, message:String(message).slice(0,450),
+      level,title:String(title).slice(0,100)};
+    const next=[...prev,row];
+    if(next.length>MAX_LOGS) next.splice(0,next.length-MAX_LOGS);
+    await chrome.storage.local.set({[LOG_KEY]:next});
+  });
+  logQueue=job.catch(err=>console.error('AP5 log',err));
+  return job;
+}
+async function badge() {
+  const s=await getState(), arr=Object.values(s.items||{});
+  const sent=arr.reduce((n,x)=>n+(x.sent||0),0);
+  const held=arr.filter(x=>x.phase==='needs_review').length;
+  await chrome.action.setBadgeText({text:!s.enabled?'':held?'!':String(sent||'ON')});
+  await chrome.action.setBadgeBackgroundColor({color:held?'#b45309':'#15803d'});
+  await chrome.action.setTitle({title:s.enabled
+    ? `ChatGPT Autopilot v5.1 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
+    : 'ChatGPT Autopilot v5.1 · off · click to start; right-click for report'});
+}
+async function running(session) { const s=await getState(); return s.enabled&&s.session===session; }
+async function stop(reason='Stopped by user') {
+  const prev=await getState();
+  await mutateState(s=>{ if (s.enabled) {s.enabled=false; s.stoppedAt=time(); s.reason=reason;} });
+  await chrome.alarms.clear(ALARM);
+  await Promise.allSettled((prev.tabIds||[]).map(id=>tabMessage(id,'AP5_MONITOR',{enabled:false})));
+  await Promise.allSettled(Object.entries(prev.discardFlags||{}).map(([id,flag])=>
+    chrome.tabs.update(Number(id),{autoDiscardable:!!flag})));
+  await logEvent('monitor_stopped',null,reason);
+  await badge();
+}
+async function addTab(tab) {
+  let item;
+  const added=await mutateState(s=>{
+    if(!s.enabled||!chatUrl(tab.url)||tab.windowId!==s.windowId||!Number.isInteger(tab.id)||s.items[tab.id]) return false;
+    item=AutopilotCore.newItem(tab.title||`Tab ${tab.index+1}`);
+    s.items[tab.id]=item;
+    s.tabIds.push(tab.id);
+    s.discardFlags[tab.id]=tab.autoDiscardable;
+    return true;
+  });
+  if(added){
+    await logEvent('tab_added',tab.id,'Conversation added to monitoring','info',item.name);
+    await chrome.tabs.update(tab.id,{autoDiscardable:false}).catch(()=>{});
+    await tabMessage(tab.id,'AP5_MONITOR',{enabled:true}).catch(()=>{});
+  }
+  return added;
+}
+async function start(tab) {
+  const all=await chrome.tabs.query({windowId:tab.windowId});
+  const chosen=all.filter(t=>Number.isInteger(t.id)&&chatUrl(t.url)).sort((a,b)=>a.index-b.index);
+  if(!chosen.length){
+    await logEvent('start_rejected',null,'No ChatGPT conversations found in this window','warning');
+    return;
+  }
+  const s=DEFAULT(); s.enabled=true; s.windowId=tab.windowId; s.session=crypto.randomUUID(); s.startedAt=time();
+  await mutateState(current=>Object.assign(current,s));
+  await logEvent('monitor_started',null,`Found ${chosen.length} conversations; continuous independent monitoring`);
+  await Promise.allSettled(chosen.map(addTab));
+  await chrome.alarms.create(ALARM,{periodInMinutes:0.5});
+  await badge();
+  await scanAll();
+}
+async function mark(id,session,mutator) {
+  return mutateState(s=>{
+    if(!s.enabled||s.session!==session||!s.items[id]) return null;
+    return mutator(s.items[id],s);
+  });
+}
+const dispatch = (target,method,params) => chrome.debugger.sendCommand(target,method,params);
+async function mouseClick(target,x,y) {
+  await dispatch(target,'Input.dispatchMouseEvent',{type:'mouseMoved',x,y});
+  await dispatch(target,'Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});
+  await dispatch(target,'Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1});
+}
+async function pressKey(target,key,code,virtualKey,text=null) {
+  const base={key,code,windowsVirtualKeyCode:virtualKey,nativeVirtualKeyCode:virtualKey};
+  await dispatch(target,'Input.dispatchKeyEvent',{type:'keyDown',...base,
+    ...(text===null?{}:{text,unmodifiedText:text})});
+  await dispatch(target,'Input.dispatchKeyEvent',{type:'keyUp',...base});
+}
+async function act(id,session,observed) {
+  const expected={conversationId:observed.conversationId,assistantSig:observed.assistantSig,
+    userCount:observed.userCount,lastUserSig:observed.lastUserSig};
+  let prepared;
+  try { prepared=await tabMessage(id,'AP5_PREPARE',{expected}); }
+  catch { return {kind:'skip',reason:'Page reloaded; skipping'}; }
+  if(!prepared?.ok) return {kind:'skip',reason:prepared?.reason||'Conversation changed'};
+  const target={tabId:id};let attached=false,enterBoundary=false;
   try {
-    // Persist the pre-Enter phase. Any interrupted send must not automatically replay.
-    entry.phase='preparing';entry.reason='Focusing composer';await persist();
-    await chrome.debugger.attach({tabId:id},'1.3');attached=true;
-    const second=await observe(id);
-    if(!second || second.busy || !second.complete || !second.ready || second.draft || !second.composer || second.lastUser!==obs.lastUser)
-      throw Error('State changed before click');
-    const {x,y}=second.rect;
-    await chrome.debugger.sendCommand({tabId:id},'Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});
-    await chrome.debugger.sendCommand({tabId:id},'Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1});
-    await press(id,'ArrowUp','ArrowUp',38);await sleep(150);
-    const recalled=await observe(id);
-    if(!recalled || recalled.busy || !recalled.composerText || recalled.composerText.trim()!==obs.prompt.trim())
-      throw Error('ArrowUp did not recall the expected message');
-    // Enter boundary is persisted BEFORE dispatch, so a worker crash cannot replay it.
-    entry.phase='sending';entry.baseline={users:obs.users,assistant:obs.assistant,prompt:obs.lastUser};
-    entry.lastSentAt=Date.now();await persist();
-    entered=true;
-    await press(id,'Enter','Enter',13);
-    entry.phase='await_ack';entry.count++;entry.reason='Enter sent; awaiting acknowledgement';
-    record(id,'sent','ArrowUp + Enter');await persist();
-  } catch(e) {
-    if(entered || entry.phase==='sending'){
-      entry.phase='review';entry.reason='Enter delivery may be uncertain: '+e.message;
-      record(id,'review',entry.reason);
-    } else {
-      entry.phase='watching';entry.retryAfter=Date.now()+10000;
-      entry.reason='Skipped: '+e.message;record(id,'skip',entry.reason);
+    await chrome.debugger.attach(target,'1.3');attached=true;
+    if(!await running(session))return {kind:'skip',reason:'Monitoring stopped'};
+    await mouseClick(target,prepared.x,prepared.y);
+    await wait(100);
+    let check=await tabMessage(id,'AP5_AFTER_CLICK',{expected});
+    if(!check?.ok)return {kind:'skip',reason:check?.reason||'Click did not focus the composer'};
+    if(!await running(session))return {kind:'skip',reason:'Monitoring stopped'};
+    await pressKey(target,'ArrowUp','ArrowUp',38);
+    await wait(180);
+    check=await tabMessage(id,'AP5_AFTER_UP',{expected});
+    if(!check?.ok) {
+      // Do not send Enter when ArrowUp opened message editing, did nothing or
+      // the assistant started producing again. Skip this tab, keep others running.
+      if(check?.editorEmpty) {
+        try { await pressKey(target,'Escape','Escape',27); } catch {}
+      }
+      return {kind:'skip',reason:check?.reason||'ArrowUp did not recall the prompt'};
     }
-    await persist();
-  } finally {
-    if(attached){try{await chrome.debugger.detach({tabId:id})}catch{}}
+    if(!await running(session))return {kind:'skip',reason:'Monitoring stopped before Enter'};
+    // Last-moment independent gate: must STILL have a completed assistant
+    // response and the exact same restored message focused in the composer.
+    check=await tabMessage(id,'AP5_BEFORE_ENTER',{expected});
+    if(!check?.ok) return {kind:'skip',reason:check?.reason||'Response completion not confirmed'};
+    if(!await running(session))return {kind:'skip',reason:'Monitoring stopped before Enter'};
+    // Enter may be delivered even if the service worker dies after this write.
+    // On restart, `sending` is treated as uncertain, never blindly resent.
+    await mark(id,session,item=>{
+      item.phase='sending';item.status='Enter may have been sent; awaiting acknowledgement';
+      item.sentAt=time();item.baseline={conversationId:observed.conversationId,
+        userCount:observed.userCount,assistantSig:observed.assistantSig,
+        sentPromptSig:observed.lastUserSig};
+    });
+    enterBoundary=true;
+    await pressKey(target,'Enter','Enter',13,'\r');
+    return {kind:'sent'};
+  }catch(err){
+    return {kind:enterBoundary?'hold':'skip',
+      reason:`Tab input failed: ${String(err?.message||err).slice(0,200)}`};
+  }finally{
+    if(attached)await chrome.debugger.detach(target).catch(()=>{});
   }
 }
-async function scan(id) {
-  if(!state.running || busyTabs.has(id))return;
-  busyTabs.add(id);
-  try {
-    const t=await chrome.tabs.get(id).catch(()=>null);
-    if(!t || t.windowId!==state.windowId || !eligible(t.url))return;
-    let entry=state.tabs[id] ||= AutopilotCore.initial(id);
-    const obs=await observe(id);
-    if(entry.phase==='ready') entry.phase='watching';
-    const next=AutopilotCore.decide(entry,obs);
-    if(next.reason!==entry.reason || next.phase!==entry.phase)record(id,next.phase,next.reason);
-    state.tabs[id]=entry=next;await persist();
-    if(entry.phase==='ready' && obs){
-      // Require the same completed assistant evidence across multiple observations.
-      const stamp=obs.assistant+':'+obs.users+':'+obs.lastUser;
-      if(!entry.stability || entry.stability.stamp!==stamp){
-        entry.stability={stamp,since:Date.now()};
-        entry.phase='watching';entry.reason='Confirming completed response remains stable';
-        await persist();return;
-      }
-      if(Date.now()-entry.stability.since<4500){
-        entry.phase='watching';entry.reason='Waiting for completion stability';
-        await persist();return;
-      }
-      // The final observation is repeated before all synthetic input is sent.
-      const confirmation=await observe(id);
-      if(!confirmation || confirmation.busy || !confirmation.complete || !confirmation.ready ||
-        confirmation.assistant!==obs.assistant || confirmation.lastUser!==obs.lastUser){
-        entry.stability=null;entry.phase='watching';await persist();return;
-      }
-      entry.stability=null;
-      await sendSequence(id,confirmation,entry);
-    } else if(obs && (obs.busy || !obs.complete || !obs.ready)){
-      entry.stability=null;await persist();
+async function scanOne(id) {
+  let s=await getState();
+  if(!s.enabled||!s.items[id]) return;
+  const session=s.session;
+  let tab;
+  try {tab=await chrome.tabs.get(id);}catch{tab=null;}
+  if(!tab||!chatUrl(tab.url)||tab.windowId!==s.windowId){
+    await mark(id,session,item=>{item.phase='needs_review';item.status='Tab changed';item.reason='Conversation closed or URL changed';});
+    return;
+  }
+  if(tab.discarded) {
+    await mark(id,session,item=>{ if(item.phase==='watching') item.status='Chrome discarded this tab; skipping'; });
+    return;
+  }
+  let observed;
+  try {observed=await tabMessage(id,'AP5_INSPECT');}
+  catch{observed=null;}
+  if(!await running(session)) return;
+  const result=await mark(id,session,item=>{
+    const decision=AutopilotCore.decide(item,observed,time());
+    Object.assign(item,decision.item);
+    return {send:decision.send,event:decision.event,level:decision.level,
+      status:item.status,reason:item.reason,name:item.name,phase:item.phase};
+  });
+  if(!result) return;
+  if(result.event) await logEvent(result.event,id,result.reason||result.status,result.level,result.name);
+  if(!result.send) {
+    if(result.event) await badge();
+    if(result.event==='reply_completed') setTimeout(()=>scheduleTab(id),100);
+    return;
+  }
+  // Crash-safe transition, scoped to this tab only. Busy tabs keep scanning elsewhere.
+  const created=await mark(id,session,item=>{
+    if(item.phase!=='watching')return false;
+    item.phase='preparing';item.status='Clicking Ask ChatGPT, then ArrowUp';item.lastUpdatedAt=time();
+    return true;
+  });
+  if(!created) return;
+  await logEvent('send_preparing',id,'Click composer → ArrowUp → verify text → Enter', 'info',result.name);
+  const attempted=await act(id,session,observed);
+  if(!await running(session))return;
+  const update=await mark(id,session,item=>{
+    if(attempted.kind==='sent') {
+      item.phase='await_ack';item.status='Enter dispatched; awaiting acknowledgement';
+      item.sent++;item.lastActionAt=time();item.sentAt ||= time();item.reason='';
+    } else if(attempted.kind==='skip') {
+      item.phase='watching';item.status='Skipped a tab that was not ready';item.reason=attempted.reason;
+      item.retryAfter=time()+5000;
+    } else {
+      item.phase='needs_review';item.status='Only this conversation requires review';item.reason=attempted.reason;
     }
-  }catch(e){record(id,'scan_error',e.message);await persist()}finally{busyTabs.delete(id);}
+    item.lastUpdatedAt=time();return {name:item.name};
+  });
+  if(update){
+    const event=attempted.kind==='sent'?'send_enter':attempted.kind==='skip'?'send_skipped':'tab_needs_review';
+    await logEvent(event,id,attempted.reason||(attempted.kind==='sent'?'Awaiting continuation message acknowledgement':'Skipped without sending'),
+      attempted.kind==='hold'?'warning':'info',update.name);
+    await badge();
+  }
+  // Rescan quickly; further waits are event-driven, never a 10 minute loop.
+  if(attempted.kind==='sent') setTimeout(()=>scheduleTab(id),900);
 }
-async function all() {
-  if(!state.running)return;
-  const tabs=await chrome.tabs.query({windowId:state.windowId});
-  await Promise.all(tabs.filter(t=>eligible(t.url)).map(t=>scan(t.id)));
+async function scheduleTab(id) {
+  if(locks.has(id)){queued.add(id);return;}
+  locks.add(id);
+  try {
+    do {queued.delete(id);await scanOne(id);} while(queued.has(id));
+  }catch(err){
+    await logEvent('scan_failed',id,String(err?.message||err),'warning').catch(()=>{});
+  }finally{locks.delete(id);}
 }
-function schedule(id){if(!state.running||queued.has(id))return;queued.add(id);setTimeout(()=>{queued.delete(id);scan(id)},800);}
-chrome.runtime.onMessage.addListener((msg,sender)=>{if(msg?.type==='DOM_CHANGED' && sender.tab?.id)schedule(sender.tab.id)});
-chrome.tabs.onUpdated.addListener((id,_info,tab)=>{if(state.running&&tab.windowId===state.windowId)schedule(id)});
-chrome.tabs.onRemoved.addListener(id=>{delete state.tabs[id];record(id,'closed');persist()});
-chrome.action.onClicked.addListener(async tab=>{
-  if(state.running){state.running=false;record(null,'stopped');await persist();await chrome.action.setBadgeText({text:''});return}
-  state.running=true;state.windowId=tab.windowId;state.tabs={};record(null,'started','window '+tab.windowId);
-  await persist();await chrome.action.setBadgeText({text:'ON'});await all();
+async function scanAll() {
+  const s=await getState();
+  if(s.enabled) await Promise.allSettled(s.tabIds.map(scheduleTab));
+}
+async function migrate() {
+  const data=await chrome.storage.local.get([OLD_STATE_KEY,OLD_LOG_KEY,LOG_KEY,'autopilot5_migrated','autopilot3_logs','autopilot3_state']);
+  if(data.autopilot5_migrated)return;
+  const oldLogs=Array.isArray(data[OLD_LOG_KEY])?data[OLD_LOG_KEY]:(Array.isArray(data.autopilot3_logs)?data.autopilot3_logs:[]);
+  const prevLogs=Array.isArray(data[LOG_KEY])?data[LOG_KEY]:[];
+  await chrome.storage.local.set({
+    autopilot5_migrated:true,
+    autopilot5_previous_snapshot:data[OLD_STATE_KEY]||data.autopilot3_state||null,
+    [LOG_KEY]:[...oldLogs,...prevLogs].slice(-MAX_LOGS)
+  });
+  await logEvent('migration_v4',null,`Imported ${oldLogs.length} legacy log entries and saved previous state snapshot`);
+}
+async function init() {
+  await chrome.contextMenus.removeAll();
+  chrome.contextMenus.create({id:MENU,title:'Activity report and logs',contexts:['action']});
+  await migrate();
+  // Normal extension upgrade must not globally stop ongoing monitoring.
+  // Pending input is recovered by the state machine; no Enter replay.
+  const current=await getState();
+  await badge();
+  if(current.enabled) {
+    await chrome.alarms.create(ALARM,{periodInMinutes:0.5});
+    for(const id of (current.tabIds||[])) {
+      try { await chrome.scripting.executeScript({target:{tabId:id},files:['content.js']}); } catch {}
+      await tabMessage(id,'AP5_MONITOR',{enabled:true}).catch(()=>{});
+    }
+    scanAll();
+  }
+  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.1.0');
+}
+chrome.action.onClicked.addListener(tab=>{(async()=>{
+  const s=await getState();
+  if(s.enabled)await stop();else await start(tab);
+})().catch(err=>logEvent('toggle_error',null,String(err?.message||err),'error'));});
+chrome.contextMenus.onClicked.addListener(info=>{
+  if(info.menuItemId===MENU)chrome.runtime.openOptionsPage();
 });
-chrome.alarms.onAlarm.addListener(a=>{if(a.name==='watchdog')all()});
-chrome.runtime.onInstalled.addListener(async()=>{await chrome.alarms.create('watchdog',{periodInMinutes:0.5});chrome.contextMenus.create({id:'report',title:'Open activity report',contexts:['action']});});
-chrome.contextMenus.onClicked.addListener(m=>{if(m.menuItemId==='report')chrome.runtime.openOptionsPage()});
-(async()=>{await restore();await chrome.alarms.create('watchdog',{periodInMinutes:0.5});await chrome.action.setBadgeText({text:state.running?'ON':''});if(state.running)await all()})();
+chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
+  if(!msg?.type)return;
+  if(msg.type==='AP5_HELLO' && Number.isInteger(sender.tab?.id)) {
+    getState().then(s=>respond({monitored:s.enabled&&s.tabIds.includes(sender.tab.id)}))
+      .catch(()=>respond({monitored:false}));
+    return true;
+  }
+  if(['AP5_WAKE','AP5_TICK'].includes(msg.type)&&Number.isInteger(sender.tab?.id)) {
+    scheduleTab(sender.tab.id);return;
+  }
+  if(msg.type==='AP5_TOGGLE' && sender.id===chrome.runtime.id && !sender.tab){
+    (async()=>{ const s=await getState(); if(s.enabled)await stop();else{
+      const tabs=await chrome.tabs.query({active:true,currentWindow:true});
+      if(tabs[0])await start(tabs[0]);
+    }respond({ok:true});})().catch(e=>respond({ok:false,error:String(e)}));
+    return true;
+  }
+});
+chrome.alarms.onAlarm.addListener(a=>{if(a.name===ALARM)scanAll();});
+chrome.tabs.onRemoved.addListener(id=>{(async()=>{
+  let removed=false,name='';
+  await mutateState(s=>{if(!s.enabled||!s.items[id])return;
+    removed=true;name=s.items[id].name;delete s.items[id];
+    s.tabIds=s.tabIds.filter(x=>x!==id);delete s.discardFlags[id];});
+  if(removed){await logEvent('tab_removed',id,'Tab closed','info',name);await badge();}
+})().catch(()=>{});});
+chrome.tabs.onUpdated.addListener((id,change,tab)=>{
+  if(!change.url&&change.status!=='complete')return;
+  (async()=>{
+    const s=await getState();
+    if(!s.enabled||tab.windowId!==s.windowId)return;
+    if(chatUrl(tab.url)){
+      const added=await addTab(tab);
+      if(!added)await tabMessage(id,'AP5_MONITOR',{enabled:true}).catch(()=>{});
+      scheduleTab(id);
+    }
+  })().catch(()=>{});
+});
+chrome.runtime.onInstalled.addListener(()=>{init().catch(err=>console.error('AP5 init',err));});
+chrome.runtime.onStartup.addListener(()=>{(async()=>{
+  const s=await getState();if(s.enabled)await stop('Chrome restarted; monitoring paused to prevent duplicate sends');
+  else await badge();
+})().catch(()=>{});});

@@ -1,10 +1,24 @@
-node_modules/
-.DS_Store
+# Personal data / browser state
 *.log
 logs/
 exports/
+reports/private/
+*.har
+*.sqlite
+*.sqlite3
+**/Default/
+**/Profile */
+*.pem
 .env
 .env.*
-!*.example
+!example.env
+# Local temporary data and packaging
+node_modules/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+Thumbs.db
 *.zip
-coverage/
+*.crx
+*.key

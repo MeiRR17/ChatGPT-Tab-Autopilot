@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Tab Autopilot",
+  "short_name": "GPT Autopilot",
+  "description": "Local, per-chat continuation monitor. Click composer, ArrowUp, Enter only after positive response completion and Send-button verification.",
   "version": "5.1.0",
-  "description": "Monitor ChatGPT tabs and safely continue completed conversations.",
   "minimum_chrome_version": "120",
   "permissions": [
     "tabs",
     "debugger",
-    "storage",
     "alarms",
+    "storage",
     "contextMenus",
     "scripting"
   ],
@@ -28,11 +29,24 @@
       "js": [
         "content.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "action": {
-    "default_title": "ChatGPT Autopilot: start or stop"
+    "default_title": "ChatGPT Autopilot v5.1 · click to start/stop; right-click for report",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
-  "options_page": "report.html"
+  "options_page": "report.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }

@@ -1,16 +1,19 @@
 # Changelog
 
-## 5.1.0 (2026-11-05)
-- Initial GitHub source publication with English documentation.
-- Per-conversation monitoring; busy conversations are skipped, never globally stopped.
-- Positive response-completion checks before focus → ArrowUp → verification → Enter.
-- Local audit-log reporting and JSON export.
-- Explicit handling of uncertain send acknowledgement to prevent duplicate submissions.
+## 5.1.0 — 2026-11-05
 
-## 5.0.0 (local development)
-- Added completion evidence instead of relying exclusively on text stability.
-- Fixed routine skips incorrectly becoming global pauses.
+- Added a positive **enabled Send button** gate before Enter to reduce the risk of inadvertently hitting Stop while ChatGPT is generating.
+- Localized the report UI and documentation into English; kept detection support for Hebrew continuation prompts and UI labels.
+- Documented public-repository privacy rules, experimental limitations, installation and testing.
+- Kept continuous independent per-chat monitoring, exact click → ArrowUp → Enter, and a per-chat no-duplicate state machine.
 
-## 4.0.0 and earlier (local development)
-- Introduced debugger-driven click/ArrowUp/Enter and per-tab scheduling.
-- Earlier versions had known risks of interruption and incorrectly stopping generation. Do not install these for production use.
+## 5.0.0 — 2026-11-05 (local baseline)
+
+- Added positive completion-action detection on the latest assistant message, beyond simply waiting for the Stop button to disappear.
+- Added independent tab monitoring with safe busy-tab skipping and late acknowledgement recovery.
+- Added 30-second recovery alarm, in-page mutation notifications and a ~2.2-second pulse.
+- Kept Chrome Debugger mouse and keyboard events and local audit-log export.
+
+## 4.x and earlier
+
+- Earlier prototypes attempted timing-based continuation and subsequently added per-tab state and a local reporting dashboard. Historical private exports and unverified run logs are intentionally excluded from the public repository.

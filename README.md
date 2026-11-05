@@ -1,53 +1,69 @@
 # ChatGPT Tab Autopilot
 
-A local Chrome Manifest V3 extension that monitors multiple ChatGPT conversations and only attempts to continue a conversation after its previous assistant response has finished.
+**Version 5.1.0 — experimental local Chrome extension, Manifest V3.**
 
-> **Development status: experimental.** A successful unit test does not establish that a live ChatGPT session will behave correctly. Test on one disposable conversation before using multiple tabs.
+Monitors existing ChatGPT conversations in the **same Chrome window** without switching tabs or taking over your physical keyboard/mouse. When a conversation **positively appears finished**, the extension attempts this exact sequence inside that tab:
 
-## What it does
+1. Verify the latest assistant turn has completed and the page is stable (approximately 4.5 seconds).
+2. Click inside the **Ask ChatGPT** composer using Chrome Debugger input.
+3. Press **ArrowUp** once to recall the last user prompt.
+4. Verify the restored text is the same short continuation request as the last user message, and confirm the **Send** button is enabled.
+5. Press **Enter** once; wait for message acknowledgement and a **new completed assistant reply** before any subsequent send.
 
-- Monitors ChatGPT conversation tabs in the Chrome window where it was activated.
-- Skips tabs that are loading, generating a reply, requesting human action, or contain an unsent draft.
-- Attempts to focus the **Ask ChatGPT** composer with Chrome's debugger mouse input, press **Arrow Up** to recall the last prompt, verify the recalled prompt, and press **Enter**.
-- Tracks each conversation independently. There is **no ten-minute wait**; background checks are reactive and periodic.
-- Keeps local event logs and a report that can be exported.
-- Does not change the operating system's mouse cursor or switch the selected Chrome tab.
+**Busy, loading, drafting and unconfirmed conversations are skipped and rescanned.** There is no 10-minute batch delay. Each tab emits change notifications and a short periodic pulse; a 30-second recovery alarm helps after Chrome suspends background work.
 
-## Install (unpacked Chrome extension)
+> **Experimental:** This is not an official OpenAI product. ChatGPT's DOM is undocumented and changes frequently. Local tests have passed, but a live ChatGPT end-to-end send has **not** been validated for this release. Never rely on it without supervision; test on one disposable chat first. It cannot guarantee no accidental interruption in every UI state.
 
-1. Download or clone this repository and ensure `manifest.json` is at the folder root.
-2. In Chrome, open `chrome://extensions` and enable **Developer mode**.
-3. Select **Load unpacked**, then choose the repository folder.
-4. Disable any older Autopilot installations so only one automation is active.
-5. Open your intended ChatGPT conversations in the **same Chrome window**.
-6. Click the extension's toolbar icon to start, and click it again to stop.
-7. Use the extension's options page / context menu to inspect the event log.
+## Install
 
-## Safety boundaries
+1. Download this repository as ZIP, or clone it. Keep the extension files in a persistent local folder (the root containing `manifest.json`).
+2. Open `chrome://extensions`, turn on **Developer mode**, select **Load unpacked**, and choose that folder.
+3. Disable/uninstall older Autopilot versions if separate copies are installed; two enabled copies could send twice.
+4. Pin the extension using Chrome's Extensions menu. Open ChatGPT conversations in the **same window**.
+5. Click the Autopilot icon **once to start**, and **again to stop**. Right-click the icon and open **Activity report and logs** to inspect the run and export CSV, JSON or Markdown.
 
-**Never press Enter solely because the page looks idle.** An assistant can pause during a reply without having completed it. The extension must observe affirmative evidence of a completed assistant response and an empty, available composer. An uncertain tab is skipped and revisited; it must not stop other tabs.
+If upgrading an already-loaded unpacked extension, back up the folder and **replace files in place**, then click **Reload** on `chrome://extensions`; installing as a new extension will create a different extension ID and lose access to old local log storage. The upgrade tries to import v3/v4 event entries if present, but events that were never saved cannot be recovered.
 
-When Enter may already have been delivered but acknowledgement is absent, the affected tab must be held for review rather than blindly repeated. This is different from a routine skip.
+## Safety behavior
 
-The extension uses the powerful `debugger` permission. Chrome may display a debugging warning. The extension is designed for local use and does not require a third-party backend. **Do not commit personal conversation exports, tokens, cookies, or raw private logs.** Exported logs may expose tab names and metadata.
+| Situation | Behavior |
+| --- | --- |
+| ChatGPT is generating, reasoning or awaiting tool output | Skip that conversation; rescan independently. |
+| Page incomplete, hidden composer, draft or manual approval | Skip and retry when state changes. |
+| Last user message is not a short `continue`/`keep going`/`תמשיך`/`המשך` request | Do not send. |
+| No positive completed-turn action or enabled Send control | Do not send. |
+| ArrowUp fails or restores unexpected text | Do not press Enter. |
+| Enter might have been delivered but no acknowledgement arrived | Mark **only this conversation** as `needs_review`; never blindly resend. |
+| New answer is being generated | Never send another request until that answer has been positively verified complete. |
+| Maximum of 100 sends to a conversation per session | Stop sending to that conversation. |
 
-## Limitations
+**What “independent” means:** The extension targets background tabs by their Chrome tab IDs using the `chrome.debugger` permission, without activating the tab and without sending OS-wide keypresses. This is high-privilege access; only install code you trust. Chrome may show a debugger warning while the extension is using it. Background tabs may be throttled, so “continuous” does **not** mean a guaranteed millisecond response time.
 
-- ChatGPT's interface and selectors change, and keyboard recall behavior is not a documented stable API.
-- Chrome may throttle background tabs and service workers.
-- Tool activity, thinking pauses, dialogs, and changed conversation state can make completion ambiguous.
-- The extension cannot guarantee a continuation will never interrupt an active reply. Supervise an initial one-tab test.
-- This project is **unofficial** and is not affiliated with OpenAI.
+## Privacy and permissions
 
-## Development
+- Only exact ChatGPT host permissions: `https://chatgpt.com/*` and `https://chat.openai.com/*`.
+- No external network reporting or analytics; activity data stays in `chrome.storage.local` (up to the latest 5,000 events).
+- The extension does **not** intentionally log message bodies, but stores tab titles, timestamps, short error/reason strings, and per-chat message fingerprints/metadata in local state; exported reports may reveal sensitive context via tab titles.
+- It requests `debugger` (synthetic mouse/keyboard within a tab), `tabs` (tab enumeration), `storage` (local state), `alarms` (recovery), `scripting` (reinject content script after service-worker restart), and `contextMenus` (open report).
+- Never commit a real exported activity report, browser profile, login cookie, or conversation content to a public repository.
+
+## Run local checks
+
+Requires Node.js with `node:test`. No package installation is necessary.
 
 ```bash
 npm test
 npm run check
 ```
 
-See `docs/ARCHITECTURE.md`, `docs/SAFETY.md` and `CHANGELOG.md` for design and release notes.
+Optional Chromium/Playwright smoke probes are in `tests/` and may require Python, Playwright and a local Chromium installation. They are **not** substitutes for a live-account validation.
 
-## License
+## Troubleshooting
 
-No open-source license has been selected. Public visibility alone does not grant permission to reuse, modify, or redistribute this repository.
+- **Chat still generating, but extension sends:** Stop immediately; export the report and open an issue with *sanitized* observations. This is a safety defect.
+- **The tab is skipped repeatedly:** Inspect the reason in the activity report. If no completed-turn action or enabled Send control is detected, the extension fails closed rather than pressing Enter on Stop.
+- **ArrowUp edits the earlier message instead of recalling it:** The message fingerprint check prevents Enter. The interface behavior may have changed.
+- **Chrome reports “debugger detached” or another extension is debugging the tab:** Avoid running other debugger tools on the same tabs.
+- **No events restored after installing a new copy:** Local storage is scoped to an extension ID. Preserve the old installation and export the old report first.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md), [`SECURITY.md`](SECURITY.md), and [`CHANGELOG.md`](CHANGELOG.md). A public repository should contain **source and synthetic evidence only**, not real user logs.
