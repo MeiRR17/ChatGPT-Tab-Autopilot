@@ -26,7 +26,7 @@ const AutopilotCore = (() => {
     if (tab.count>=LIMIT) return { ...tab, phase:'limit', reason:'Safety limit reached' };
     if (obs.busy || obs.draft || obs.dialog || !obs.complete || !obs.ready || now<tab.retryAfter)
       return { ...tab, reason:'Skipping: generating, unavailable or waiting' };
-    if (!obs.prompt || !/^(תמשיך|המשך|continue|keep going)\b/i.test(obs.prompt.trim()))
+    if (!obs.prompt || !/^(תמשיך|המשך|continue|keep going)(?=\\s|$)/i.test(obs.prompt.trim()))
       return { ...tab, reason:'Last prompt not an approved continuation' };
     return { ...tab, phase:'ready', reason:'Completion confirmed' };
   }
