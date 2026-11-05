@@ -16,7 +16,7 @@ concurrency:
 jobs:
   simulated-chrome:
     name: Installed Manifest V3 extension against synthetic ChatGPT tabs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
