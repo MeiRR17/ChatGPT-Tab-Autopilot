@@ -10,7 +10,8 @@ const MAX_LOGS = 5000;
 const DEFAULT = () => ({enabled:false, windowId:null, session:'', tabIds:[], items:{},
   discardFlags:{}, startedAt:0, stoppedAt:0, reason:''});
 const locks = new Set(), queued = new Set();
-let stateQueue = Promise.resolve(), logQueue = Promise.resolve();
+const scriptRetryAt = new Map();
+let stateQueue = Promise.resolve(), logQueue = Promise.resolve(), toggleQueue=Promise.resolve();
 const time = () => Date.now();
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const chatUrl = url => {
@@ -50,12 +51,13 @@ async function badge() {
   await chrome.action.setBadgeText({text:!s.enabled?'':held?'!':String(sent||'ON')});
   await chrome.action.setBadgeBackgroundColor({color:held?'#b45309':'#15803d'});
   await chrome.action.setTitle({title:s.enabled
-    ? `ChatGPT Autopilot v5.2 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
-    : 'ChatGPT Autopilot v5.1 · off · click to start; right-click for report'});
+    ? `ChatGPT Autopilot v5.3 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
+    : 'ChatGPT Autopilot v5.3 · off · click to start; right-click for report'});
 }
 async function running(session) { const s=await getState(); return s.enabled&&s.session===session; }
 async function stop(reason='Stopped by user') {
   const prev=await getState();
+  scriptRetryAt.clear();
   await mutateState(s=>{ if (s.enabled) {s.enabled=false; s.stoppedAt=time(); s.reason=reason;} });
   await chrome.alarms.clear(ALARM);
   await Promise.allSettled((prev.tabIds||[]).map(id=>tabMessage(id,'AP5_MONITOR',{enabled:false})));
@@ -114,6 +116,27 @@ async function pressKey(target,key,code,virtualKey,text=null) {
     ...(text===null?{}:{text,unmodifiedText:text})});
   await dispatch(target,'Input.dispatchKeyEvent',{type:'keyUp',...base});
 }
+async function clearRestoredPrompt(target,id,expected) {
+  // Some UIs leave the recalled prompt visible after a failed completion
+  // gate. Only clear text when content.js proves it is still exactly our
+  // recalled prompt and the same conversation/composer has focus.
+  const check=await tabMessage(id,'AP5_CLEANUP_CHECK',{expected}).catch(()=>null);
+  if(!check?.ok)return false;
+  const mac=check.modifier==='Meta',modifier=mac?4:2;
+  const modKey=mac?'Meta':'Control',modCode=mac?'MetaLeft':'ControlLeft',modV=mac?91:17;
+  const m={key:modKey,code:modCode,windowsVirtualKeyCode:modV,nativeVirtualKeyCode:modV,modifiers:modifier};
+  const a={key:'a',code:'KeyA',windowsVirtualKeyCode:65,nativeVirtualKeyCode:65,modifiers:modifier};
+  await dispatch(target,'Input.dispatchKeyEvent',{type:'rawKeyDown',...m});
+  try {
+    await dispatch(target,'Input.dispatchKeyEvent',{type:'rawKeyDown',...a});
+    await dispatch(target,'Input.dispatchKeyEvent',{type:'keyUp',...a});
+  }finally{
+    await dispatch(target,'Input.dispatchKeyEvent',{type:'keyUp',...m}).catch(()=>{});
+  }
+  await pressKey(target,'Backspace','Backspace',8);
+  const after=await tabMessage(id,'AP5_INSPECT').catch(()=>null);
+  return !!after && !after.hasDraft;
+}
 async function act(id,session,observed) {
   const expected={conversationId:observed.conversationId,assistantSig:observed.assistantSig,
     userCount:observed.userCount,lastUserSig:observed.lastUserSig};
@@ -121,7 +144,7 @@ async function act(id,session,observed) {
   try { prepared=await tabMessage(id,'AP5_PREPARE',{expected}); }
   catch { return {kind:'skip',reason:'Page reloaded; skipping'}; }
   if(!prepared?.ok) return {kind:'skip',reason:prepared?.reason||'Conversation changed'};
-  const target={tabId:id};let attached=false,enterBoundary=false;
+  const target={tabId:id};let attached=false,enterBoundary=false,restoredPrompt=false;
   try {
     await chrome.debugger.attach(target,'1.3');attached=true;
     if(!await running(session))return {kind:'skip',reason:'Monitoring stopped'};
@@ -149,6 +172,7 @@ async function act(id,session,observed) {
       }
       return {kind:'skip',reason:check?.reason||'ArrowUp did not recall the prompt'};
     }
+    restoredPrompt=true;
     if(!await running(session))return {kind:'skip',reason:'Monitoring stopped before Enter'};
     // Last-moment independent gate: must STILL have a completed assistant
     // response and the exact same restored message focused in the composer.
@@ -167,6 +191,23 @@ async function act(id,session,observed) {
       return true;
     });
     if(claimed!==true) return {kind:'skip',reason:'Session changed before Enter'};
+    // Persisting the claim can take time. Revalidate once more AFTER the
+    // storage write: a Stop button, tool approval or navigation may appear
+    // during that gap. A failed check is safe to roll back: no Enter happened.
+    const finalGate=await tabMessage(id,'AP5_BEFORE_ENTER',{expected}).catch(()=>null);
+    const tabNow=await chrome.tabs.get(id).catch(()=>null);
+    if(!finalGate?.ok || !tabNow || !chatUrl(tabNow.url) ||
+       new URL(tabNow.url).pathname!==expected.conversationId || !await running(session)) {
+      await mark(id,session,item=>{
+        if(item.phase==='sending' &&
+           item.handledCompletionKey===`${observed.conversationId}|${observed.userCount}|${observed.assistantSig}`){
+          item.phase='preparing'; // scanOne will apply the safe skip backoff
+          item.handledCompletionKey='';
+          item.baseline=null;item.sentAt=0;
+        }
+      });
+      return {kind:'skip',reason:'Final post-persistence check failed; Enter NOT sent'};
+    }
     enterBoundary=true;
     await pressKey(target,'Enter','Enter',13,'\r');
     return {kind:'sent'};
@@ -174,6 +215,18 @@ async function act(id,session,observed) {
     return {kind:enterBoundary?'hold':'skip',
       reason:`Tab input failed: ${String(err?.message||err).slice(0,200)}`};
   }finally{
+    // We know no Enter was attempted. Do not leave our recalled text in the
+    // user's composer after an unrelated safety gate failed. A human-edited
+    // field is never cleared; only an exact fingerprint match is eligible.
+    if(attached && restoredPrompt && !enterBoundary && await running(session)) {
+      try {
+        const clean=await clearRestoredPrompt(target,id,expected);
+        if(!clean)await logEvent('draft_cleanup_skipped',id,
+          'Recalled prompt may remain; automatic cleanup not proven safe','warning');
+      }catch(err){
+        await logEvent('draft_cleanup_failed',id,String(err?.message||err),'warning');
+      }
+    }
     if(attached)await chrome.debugger.detach(target).catch(()=>{});
   }
 }
@@ -184,7 +237,19 @@ async function scanOne(id) {
   let tab;
   try {tab=await chrome.tabs.get(id);}catch{tab=null;}
   if(!tab||!chatUrl(tab.url)||tab.windowId!==s.windowId){
-    await mark(id,session,item=>{item.phase='needs_review';item.status='Tab changed';item.reason='Conversation closed or URL changed';});
+    // Navigating away is an ordinary skip, NOT a failure of every monitored
+    // conversation. Preserve uncertain delivery only if an Enter might have
+    // been sent in this tab. Returning to a chat can resume watching.
+    await mark(id,session,item=>{
+      if(['sending','await_ack','await_reply','needs_review'].includes(item.phase)) {
+        item.phase='needs_review';item.status='Conversation unavailable after attempted send';
+        item.reason='Open the original conversation to confirm delivery';
+      } else {
+        item.phase='watching';item.status='Outside a supported conversation; skipping';
+        item.reason='Tab is closed or navigating; will retry when available';
+        item.candidateKey='';item.candidateAt=0;
+      }
+    });
     return;
   }
   if(tab.discarded) {
@@ -194,6 +259,18 @@ async function scanOne(id) {
   let observed;
   try {observed=await tabMessage(id,'AP5_INSPECT');}
   catch{observed=null;}
+  if(!observed && (scriptRetryAt.get(id)||0)<time()) {
+    // Content scripts may be lost after sleep, crash or navigation. Reinject
+    // only into a confirmed supported chat, with a per-tab retry throttle.
+    scriptRetryAt.set(id,time()+10000);
+    try {
+      await chrome.scripting.executeScript({target:{tabId:id},files:['content.js']});
+      if(await running(session)) {
+        await tabMessage(id,'AP5_MONITOR',{enabled:true});
+        setTimeout(()=>scheduleTab(id),1200);
+      }
+    } catch { /* Page may still be loading; recovery alarm will retry. */ }
+  }
   if(!await running(session)) return;
   const result=await mark(id,session,item=>{
     const decision=AutopilotCore.decide(item,observed,time());
@@ -282,12 +359,18 @@ async function init() {
     }
     scanAll();
   }
-  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.2.0');
+  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.3.0');
 }
-chrome.action.onClicked.addListener(tab=>{(async()=>{
-  const s=await getState();
-  if(s.enabled)await stop();else await start(tab);
-})().catch(err=>logEvent('toggle_error',null,String(err?.message||err),'error'));});
+// Serialize user toggles to avoid two rapid clicks starting overlapping runs.
+function toggle(tab) {
+  const task=toggleQueue.then(async()=>{
+    const s=await getState();
+    if(s.enabled)await stop();else if(tab)await start(tab);
+  });
+  toggleQueue=task.catch(err=>logEvent('toggle_error',null,String(err?.message||err),'error'));
+  return task;
+}
+chrome.action.onClicked.addListener(tab=>{toggle(tab).catch(()=>{});});
 chrome.contextMenus.onClicked.addListener(info=>{
   if(info.menuItemId===MENU)chrome.runtime.openOptionsPage();
 });
@@ -302,15 +385,16 @@ chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
     scheduleTab(sender.tab.id);return;
   }
   if(msg.type==='AP5_TOGGLE' && sender.id===chrome.runtime.id && !sender.tab){
-    (async()=>{ const s=await getState(); if(s.enabled)await stop();else{
+    (async()=>{
       const tabs=await chrome.tabs.query({active:true,currentWindow:true});
-      if(tabs[0])await start(tabs[0]);
-    }respond({ok:true});})().catch(e=>respond({ok:false,error:String(e)}));
+      await toggle(tabs[0]);respond({ok:true});
+    })().catch(e=>respond({ok:false,error:String(e)}));
     return true;
   }
 });
 chrome.alarms.onAlarm.addListener(a=>{if(a.name===ALARM)scanAll();});
 chrome.tabs.onRemoved.addListener(id=>{(async()=>{
+  scriptRetryAt.delete(id);
   let removed=false,name='';
   await mutateState(s=>{if(!s.enabled||!s.items[id])return;
     removed=true;name=s.items[id].name;delete s.items[id];

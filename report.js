@@ -103,7 +103,7 @@ function download(name, mime, content) {
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 function exportJson() {
   download(`autopilot-report-${stamp()}.json`, 'application/json;charset=utf-8',
-    JSON.stringify({exportedAt: new Date().toISOString(), version: '5.1.0',
+    JSON.stringify({exportedAt: new Date().toISOString(), version: '5.3.0',
       note: 'Conversation message bodies are not logged; v4 logs are imported only from the same extension ID.',
       state, legacySnapshot: legacy, totalSavedEvents: logs.length, logs}, null, 2));
 }

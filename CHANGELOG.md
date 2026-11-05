@@ -1,5 +1,15 @@
 # Changelog
 
+## 5.3.0 — Last-moment Enter gate, safe draft cleanup and lifecycle recovery
+
+- Revalidate completion and the exact conversation URL **after** persisting the pre-Enter state; roll back safely without Enter if the page changes.
+- Clear an extension-restored continuation draft after a canceled action only if the composer still contains the exact known prompt. Never erase unverified or human-edited text.
+- Treat a monitored tab temporarily navigated away from ChatGPT as a routine skip; retain review state for unacknowledged sends.
+- Recover missing content scripts only on verified ChatGPT chat pages and limit reinjection frequency.
+- Serialize rapid start/stop controls to avoid overlapping sessions.
+- Add runtime worker tests for navigation, final gating, draft cleanup and script recovery; keep existing Chrome CDP smoke probes.
+- Update English usage/architecture/testing documentation and correct the exported report version.
+
 ## 5.2.0 — Completion consensus and idempotent Enter guard
 
 - Require multiple independent positive confirmations of the exact same completed assistant response before attempting input.

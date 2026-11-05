@@ -1,6 +1,6 @@
 # ChatGPT Tab Autopilot
 
-**Version 5.2.0 — experimental local Chrome extension, Manifest V3.**
+**Version 5.3.0 — experimental local Chrome extension, Manifest V3.**
 
 Monitors existing ChatGPT conversations in the **same Chrome window** without switching tabs or taking over your physical keyboard/mouse. When a conversation **positively appears finished**, the extension attempts this exact sequence inside that tab:
 
@@ -68,7 +68,7 @@ Optional Chromium/Playwright smoke probes are in `tests/` and may require Python
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md), [`SECURITY.md`](SECURITY.md), and [`CHANGELOG.md`](CHANGELOG.md). A public repository should contain **source and synthetic evidence only**, not real user logs.
 
-## v5.2 reliability improvements
+## v5.3 reliability improvements
 
 - A completed assistant response must remain **exactly the same across at least two independent polls**, separated by at least 1.8 seconds (after the DOM's 5-second stability gate). This adds latency intentionally to avoid interrupting a thinking/working response.
 - Before clicking, the debugger code checks that the tab still displays the **same conversation URL** and that the composer is still eligible.
@@ -76,3 +76,14 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TEST_REPORT.md`](docs
 - Temporary UI instability never pauses the whole run: the tab is skipped and rescanned. Genuine delivery uncertainty is isolated to that conversation (`needs_review`).
 
 **Important:** A Chrome extension cannot obtain an authoritative "model finished" event from the ChatGPT web UI. These DOM checks are best-effort, not a guarantee. For workflows requiring reliable completion signals, use an API integration designed for automation rather than simulating keystrokes in the consumer UI.
+
+
+### v5.3 changes (reliability maintenance)
+
+- **Final authorization check after persistence.** The extension now rechecks the completed-response signal *after* writing the idempotency marker and immediately before Enter. If the model resumed producing during that storage operation, Enter is not sent and the claim is safely rolled back.
+- **Draft cleanup after a rejected send.** If ArrowUp restored the original continuation request but a subsequent safety check fails, the extension tries to clear that restored request with native keyboard input **only if** the field still contains the exact verified request and has focus. User-authored or uncertain text is never erased. If cleanup cannot be verified, the event log records this and the chat is not sent.
+- **Navigation-safe skips.** Switching a monitored tab away from a chat no longer turns an ordinary watching conversation into `needs_review`. In-flight/uncertain submissions remain protected.
+- **Content-script recovery.** A missing inspector is reinjected in a supported chat with a 10-second per-tab retry throttle and independently monitored recovery.
+- **Serialized start/stop.** Rapid toolbar/report toggles cannot create two competing monitoring sessions.
+
+These changes do **not** make the Chrome UI an authoritative completion signal. The extension remains experimental and must be validated against the current ChatGPT website before broad use.

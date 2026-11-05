@@ -186,6 +186,16 @@
     return {ok:s.completed && !s.busy && enabledSendControl() && s.focused && s.hasDraft && consistent(s,expected),
       reason:'Pre-Enter safety check failed'};
   }
+  function cleanupCheck(expected){
+    // Abort cleanup unless the field still contains EXACTLY the prompt this
+    // extension restored. Never erase a user's different draft or touch an
+    // editor belonging to another conversation.
+    const ed=composer(), value=composerText(ed);
+    const safe=!!ed && onChat() && location.pathname===expected?.conversationId &&
+      (document.activeElement===ed || ed.contains(document.activeElement)) &&
+      !!value && fingerprint(value)===expected.lastUserSig;
+    return {ok:safe,modifier:/Mac/i.test(navigator.platform)?'Meta':'Control'};
+  }
   function notify(){
     if(!monitoring)return;
     const s=inspect();
@@ -205,6 +215,7 @@
       case 'AP5_AFTER_CLICK':reply(afterClick(m.expected));break;
       case 'AP5_AFTER_UP':reply(afterUp(m.expected));break;
       case 'AP5_BEFORE_ENTER':reply(beforeEnter(m.expected));break;
+      case 'AP5_CLEANUP_CHECK':reply(cleanupCheck(m.expected));break;
     }
   });
   const observer=new MutationObserver(()=>{

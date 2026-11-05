@@ -1,8 +1,6 @@
-# Test report — 2026-11-05 (v5.2.0)
+# Test report — 2026-11-05 (v5.3.0)
 
-## Automated checks
-
-Executed locally:
+## Executed locally
 
 ```bash
 npm test
@@ -12,23 +10,30 @@ python tests/background-tab-cdp-smoke.py
 python tests/browser-smoke.py
 ```
 
-**Results:** 24/24 Node tests passed. JavaScript syntax checks passed. Mock DOM/CDP input test and background-tab input test passed. The full installed-extension Playwright smoke did **not** pass: the extension service worker did not appear within the test timeout in the container. This must not be counted as successful end-to-end testing.
+- Node unit/runtime tests: **31/31 passed**.
+- JavaScript syntax: **passed**.
+- Mock Chrome CDP DOM input (mouse click → ArrowUp → Enter): **passed**.
+- Background-tab Chrome CDP input without activating the foreground tab: **passed**.
+- Full installed-extension Playwright test: **not verified**; this container's Chromium did not register the extension service worker and a `chrome://extensions/` navigation returned `ERR_BLOCKED_BY_ADMINISTRATOR`. This test is **not** counted as passing.
+- Live ChatGPT end-to-end test: **not executed**; no authenticated chat environment was available for safe validation.
 
-## Coverage
+## New regression coverage
 
-- Skip busy, loading, draft and approval states without stopping other conversations.
-- Positive completion evidence and two independent matching observations prior to input.
-- No Enter after a flickering/composition-in-progress response.
-- Durable per-completion idempotency key and uncertain-Enter recovery.
-- New assistant completion eligible after a previously handled response.
-- Short per-tab retry, acknowledgement and response state machine.
-- Real CDP-style mouse click, ArrowUp and Enter in simulated background Chromium pages.
+- Navigation away from a chat is a routine skip for a watching tab.
+- Navigating away with an uncertain Enter retains review for only that tab.
+- A completed-response signal disappearing **after** the durable Enter claim blocks Enter and rolls back the claim.
+- A healthy final check results in exactly one Enter keyDown.
+- Only a verified, identical, extension-restored prompt is eligible for native draft cleanup after a canceled send.
+- A changed/unverified draft is never cleared by cleanup.
+- Missing content inspector reinjection is throttled per tab.
 
-## Not yet validated
+## Pre-release acceptance tests on a disposable real account
 
-- Installed Manifest V3 extension background worker in an interactive real Chrome profile.
-- Live ChatGPT UI selectors, tool-use/thinking transient states and real send acknowledgement.
-- Ten simultaneous live ChatGPT chats across service worker suspension/reload.
-- Limits/behavior of the current ChatGPT web service terms and account-level rate limits.
+1. Confirm the ChatGPT interface selectors and ArrowUp behavior match the mock environment.
+2. Start in one test chat, verify no attempt is made while generating, reasoning or using tools.
+3. Ensure switching tabs, reloading, sleeping and resuming cannot send to the wrong conversation.
+4. Test simultaneous completion of 10 conversations, ensuring one send per positively completed response.
+5. Trigger a draft and a manual approval modal; verify the monitor skips without changing either.
+6. Inspect all local logs for sensitive titles before exporting or sharing.
 
-Treat as **experimental**, not production-ready. Export a sanitized diagnostic report after testing a disposable chat; never publish private chat transcripts.
+**Status: EXPERIMENTAL — not approved for unattended production use.**
