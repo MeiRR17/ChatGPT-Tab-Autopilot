@@ -1,3 +1,11 @@
+## 5.7.2 — report command authentication repair (2026-11-05)
+
+- Fix the installed-extension integration issue where reporting UI controls had no effect: the MV3 message sender includes a `tab` field for an extension report opened in Chrome.
+- Require sender ID AND the exact extension-origin `report.html` URL for report toggles and rotation settings, instead of incorrectly rejecting all tab-backed senders.
+- Deny web pages, content scripts and other extensions permission to toggle monitoring or modify settings.
+- Add three Node runtime authorization tests.
+- Improve hosted Chromium integration diagnostic output; live authenticated ChatGPT E2E remains unverified.
+
 ## 5.7.1 — post-handoff continuation bootstrap (2026-11-05)
 
 - Fix the newly opened chat getting stuck after its initial context handoff: wait for the first assistant reply to finish, then insert one short continuation request.

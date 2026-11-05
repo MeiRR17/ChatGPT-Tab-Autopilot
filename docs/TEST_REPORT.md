@@ -1,14 +1,14 @@
-# Test report — v5.7.1 (2026-11-05)
+# Test report — v5.7.2 (2026-11-05)
 
 ## Current local verification
 
-- `npm test`: **60/60 passed** (Node 22 offline unit and worker-regression tests).
+- `npm test`: **63/63 passed** (Node 22 offline unit and worker-regression tests).
 - `npm run check`: **PASSED** (all extension JavaScript syntax).
 - `python tests/app-shell-smoke.py`: **PASSED** — synthetic modern ChatGPT DOM, CDP click/ArrowUp/Enter.
 - `python tests/new-chat-dom-smoke.py`: **PASSED** — synthetic browser New Chat navigation, old prompt recall, editor focus, CDP Input.insertText, and one Enter.
 - One-time new-chat continuation bootstrap: **3 worker-runtime tests and 2 state-machine tests passed** (included in Node suite).
 - Installed full Chrome extension against an authenticated ChatGPT account: **NOT PERFORMED**.
-- GitHub Actions: must be rechecked after pushing this commit.
+- GitHub Actions: new commit checks must be verified separately. Previous installed-extension smoke failed because the report's `AP5_TOGGLE` message was rejected: `sender.tab` is present even for extension report pages. v5.7.2 fixes this and adds three authorization tests. No live authenticated ChatGPT session has been exercised.
 
 ## Scope and limits
 

@@ -59,7 +59,7 @@ function harness(phase='watching',options={}){
       if(method==='Input.dispatchKeyEvent' && args.key==='Enter' && args.type==='keyDown' && options.rotationAck && mouseReleases===3) url='https://chatgpt.com/c/new';
     }},
     action:{onClicked:event('clicked'),setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{},setTitle:async()=>{}},
-    runtime:{id:'extension-id',onMessage:event('message'),onInstalled:event('installed'),onStartup:event('startup')},
+    runtime:{id:'extension-id',getURL:p=>'chrome-extension://extension-id/'+p,onMessage:event('message'),onInstalled:event('installed'),onStartup:event('startup')},
     alarms:{onAlarm:event('alarm'),create:async()=>{},clear:async()=>{}},
     contextMenus:{onClicked:event('menu'),create:()=>{},removeAll:async()=>{}},
     scripting:{executeScript:async()=>{injections++}}
@@ -71,7 +71,7 @@ function harness(phase='watching',options={}){
     fs.readFileSync(path.join(ROOT,name),'utf8'),context,{filename:name}));
   vm.runInContext(fs.readFileSync(path.join(ROOT,'background.js'),'utf8'),context,
     {filename:'background.js'});
-  return {context,writes,commands,getInjections:()=>injections,
+  return {context,writes,commands,handlers,getInjections:()=>injections,
     setUrl:x=>{url=x},getItem:()=>writes.autopilot5_state.items[7]};
 }
 test('ordinary navigation away skips without putting the tab in needs_review',async()=>{
@@ -298,4 +298,38 @@ test('bootstrap interruption after insertion holds only that chat',async()=>{
   const out=await vm.runInContext(script,h.context);
   assert.equal(out.kind,'skip');
   assert.equal(h.commands.filter(c=>c.args.key==='Enter').length,0);
+});
+
+
+test('options report tab is authorized to start or stop monitoring',async()=>{
+  const h=harness('watching');
+  const sender={id:'extension-id',tab:{id:999},url:'chrome-extension://extension-id/report.html'};
+  const result=await new Promise((resolve,reject)=>{
+    const handled=h.handlers.message({type:'AP5_TOGGLE'},sender,resolve);
+    if(handled!==true)reject(new Error('Report control message rejected'));
+  });
+  assert.equal(result.ok,true);
+  assert.equal(h.writes.autopilot5_state.enabled,false);
+});
+test('options report tab may save new-chat rotation settings',async()=>{
+  const h=harness('watching');
+  const sender={id:'extension-id',tab:{id:999},url:'chrome-extension://extension-id/report.html'};
+  const result=await new Promise((resolve,reject)=>{
+    const handled=h.handlers.message({type:'AP5_SETTINGS',settings:{rotateEnabled:true,rotateAfter:6,rotateDelayMs:4500}},sender,resolve);
+    if(handled!==true)reject(new Error('Settings control message rejected'));
+  });
+  assert.equal(result.ok,true);
+  assert.equal(h.writes.autopilot5_settings.rotateAfter,6);
+  assert.equal(h.writes.autopilot5_settings.rotateDelayMs,4500);
+});
+test('external or untrusted scripts cannot toggle or change settings',()=>{
+  const h=harness('watching');let calls=0;
+  for(const sender of [
+    {id:'extension-id',tab:{id:7},url:'https://chatgpt.com/c/one'},
+    {id:'another-extension',url:'chrome-extension://extension-id/report.html'},
+    {id:'extension-id',url:'chrome-extension://extension-id/fake.html'}]) {
+    assert.notEqual(h.handlers.message({type:'AP5_TOGGLE'},sender,()=>calls++),true);
+    assert.notEqual(h.handlers.message({type:'AP5_SETTINGS',settings:{rotateAfter:1}},sender,()=>calls++),true);
+  }
+  assert.equal(calls,0);assert.equal(h.writes.autopilot5_state.enabled,true);
 });

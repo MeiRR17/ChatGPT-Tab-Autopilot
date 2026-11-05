@@ -75,8 +75,8 @@ async function badge() {
   await chrome.action.setBadgeText({text:!s.enabled?'':held?'!':String(sent||'ON')});
   await chrome.action.setBadgeBackgroundColor({color:held?'#b45309':'#15803d'});
   await chrome.action.setTitle({title:s.enabled
-    ? `ChatGPT Autopilot v5.7.1 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
-    : 'ChatGPT Autopilot v5.7.1 · off · click to start; right-click for report'});
+    ? `ChatGPT Autopilot v5.7.2 · ${arr.length} conversations · ${sent} sends · ${held} conversations requiring review\nClick to stop; right-click for report`
+    : 'ChatGPT Autopilot v5.7.2 · off · click to start; right-click for report'});
 }
 async function running(session) { const s=await getState(); return s.enabled&&s.session===session; }
 async function stop(reason='Stopped by user') {
@@ -660,7 +660,7 @@ async function init() {
     }
     scanAll();
   }
-  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.7.1');
+  await logEvent('extension_ready',null,'ChatGPT Tab Autopilot v5.7.2');
 }
 // Serialize user toggles to avoid two rapid clicks starting overlapping runs.
 function toggle(tab) {
@@ -675,6 +675,16 @@ chrome.action.onClicked.addListener(tab=>{toggle(tab).catch(()=>{});});
 chrome.contextMenus.onClicked.addListener(info=>{
   if(info.menuItemId===MENU)chrome.runtime.openOptionsPage();
 });
+// Extension options/report pages are real Chrome *tabs*: sender.tab is
+// populated. Reject any external page, content script or different extension.
+function isTrustedReportSender(sender){
+  if(sender?.id!==chrome.runtime.id)return false;
+  try {
+    const expected=new URL(chrome.runtime.getURL('report.html'));
+    const actual=new URL(sender.url||'');
+    return actual.origin===expected.origin && actual.pathname===expected.pathname;
+  }catch{return false;}
+}
 chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
   if(!msg?.type)return;
   if(msg.type==='AP5_HELLO' && Number.isInteger(sender.tab?.id)) {
@@ -685,7 +695,7 @@ chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
   if(['AP5_WAKE','AP5_TICK'].includes(msg.type)&&Number.isInteger(sender.tab?.id)) {
     scheduleTab(sender.tab.id);return;
   }
-  if(msg.type==='AP5_SETTINGS' && sender.id===chrome.runtime.id && !sender.tab){
+  if(msg.type==='AP5_SETTINGS' && isTrustedReportSender(sender)){
     (async()=>{
       const settings={rotateEnabled:msg.settings?.rotateEnabled!==false,
         rotateAfter:clamp(msg.settings?.rotateAfter,1,100,10),
@@ -693,7 +703,7 @@ chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
       await chrome.storage.local.set({[SETTINGS_KEY]:settings});respond({ok:true,settings});
     })().catch(err=>respond({ok:false,error:String(err)}));return true;
   }
-  if(msg.type==='AP5_TOGGLE' && sender.id===chrome.runtime.id && !sender.tab){
+  if(msg.type==='AP5_TOGGLE' && isTrustedReportSender(sender)){
     (async()=>{
       const tabs=await chrome.tabs.query({active:true,currentWindow:true});
       await toggle(tabs[0]);respond({ok:true});
