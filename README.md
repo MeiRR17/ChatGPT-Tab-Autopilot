@@ -1,6 +1,6 @@
 # ChatGPT Tab Autopilot
 
-**Version 5.5.0 — experimental local Chrome extension, Manifest V3.**
+**Version 5.6.0 — experimental local Chrome extension, Manifest V3.**
 
 Monitors existing ChatGPT conversations in the **same Chrome window** without switching tabs or taking over your physical keyboard/mouse. When a conversation **positively appears finished**, the extension attempts this exact sequence inside that tab:
 
@@ -88,7 +88,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TEST_REPORT.md`](docs
 
 These changes do **not** make the Chrome UI an authoritative completion signal. The extension remains experimental and must be validated against the current ChatGPT website before broad use.
 
-## v5.5: recovery, CSV safety and reproducible CI
+## v5.6: recovery, CSV safety and reproducible CI
 
 - If ArrowUp restores the exact last continuation text but **completion becomes unconfirmed**, cancel Enter and attempt a narrowly scoped cleanup of only that exact recalled text. Previously this failure path could strand a draft and cause endless skips. If its origin cannot be confirmed, **no cleanup takes place**; the conversation will wait for manual attention while other tabs continue.
 - Never issue a blind Escape when ArrowUp does not yield a valid composer: this could otherwise dismiss a human-controlled interface.
@@ -98,6 +98,20 @@ These changes do **not** make the Chrome UI an authoritative completion signal. 
 
 The new tests are still synthetic. **Installed extension E2E and live ChatGPT E2E are pending** and must not be represented as passed.
 
-## Duplicate conversations (v5.5)
+## Duplicate conversations (v5.6)
 
 When the same conversation URL is open in multiple monitored tabs **in the same Chrome window**, only the lowest-ID live monitored tab may send. Other copies are skipped, not marked failed; after closing or navigating away from the owner, another tab can become eligible. The guard is checked before clicking and again directly before Enter. A session-scoped durable completion claim also prevents another copy from resending the same response after the original tab closes; the claim is rolled back only if Enter was never attempted. This is a **local tab de-duplication guard**, not a distributed lock across profiles, windows or devices. Do not use multiple browser profiles to automate the same conversation.
+
+## Installed-extension integration tests (v5.6)
+
+This project now exercises the **real unpacked Manifest V3 extension** with the bundled Playwright Chromium browser in GitHub Actions. The test uses locally intercepted, synthetic `chatgpt.com/c/*` pages. It opens a generating chat, a ready chat and a duplicate of the ready chat, and verifies that only the ready owner receives the native CDP mouse-click / ArrowUp / Enter sequence. It also confirms the initially generating chat is skipped and later resumed after positive completion.
+
+Run locally outside a corporate/managed browser:
+
+```sh
+python -m pip install playwright==1.57.0
+python -m playwright install chromium
+python tests/browser-smoke.py
+```
+
+A managed Chromium installation can enforce `ExtensionInstallBlocklist: ["*"]`, preventing the service worker from registering. **This is a browser policy restriction, not proof that the extension itself fails.** Use a permitted, unmodified Playwright Chromium environment rather than altering managed policy. The GitHub workflow is an automatically checked simulated integration gate. It is *not* a real logged-in ChatGPT account test, which still requires a separate supervised release check.

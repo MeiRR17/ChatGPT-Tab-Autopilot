@@ -1,3 +1,10 @@
+## [5.6.0] - 2026-11-05
+
+- Add GitHub Actions integration job that installs Playwright's bundled Chromium and the real unpacked Manifest V3 extension.
+- Extend browser smoke test to cover generating chat, ready chat and duplicate of the same conversation with real tab-scoped CDP mouse / ArrowUp / Enter inputs.
+- Explicitly document local Chromium's managed extension installation policy as the cause of earlier registration timeouts, rather than misclassifying this as a proven extension defect.
+- Keep logged-in ChatGPT validation as a separate, pending release gate.
+
 ## [5.5.0] - 2026-11-05
 
 - Prevent two Chrome tabs showing the same ChatGPT conversation from independently sending continuations.

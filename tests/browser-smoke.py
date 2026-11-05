@@ -1,7 +1,9 @@
-"""Real Chromium + installed unpacked extension, mocked ChatGPT pages, not a live account.
-Test two independent tabs: one busy, one ready, ensure mouse/Up/Enter and no overlap.
+"""Install the real Manifest V3 extension in Playwright's bundled Chromium.
+All ChatGPT pages are synthetic, intercepted locally; no account/network access.
+Regression: busy tabs skip, ready tabs send after positive completion,
+and duplicate tabs are not allowed to send the same conversation twice.
 """
-import asyncio, json, tempfile, os
+import asyncio, json, tempfile, os, time
 from pathlib import Path
 from playwright.async_api import async_playwright
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,17 +51,27 @@ if(location.pathname.endsWith('/busy')){
 async def main():
     async with async_playwright() as pw:
         with tempfile.TemporaryDirectory() as profile:
-            ctx=await pw.chromium.launch_persistent_context(profile,
-                executable_path=os.getenv('AUTOPILOT_CHROMIUM','/usr/bin/chromium'),headless=os.getenv('AUTOPILOT_HEADED')!='1',
-                args=[f'--disable-extensions-except={ROOT}',f'--load-extension={ROOT}',
-                      '--no-sandbox','--disable-gpu','--disable-dev-shm-usage'])
+            # The system-installed Chromium in some environments has a mandatory
+            # ExtensionInstallBlocklist. Use Playwright's bundled Chromium with
+            # channel='chromium', per the official Manifest V3 testing guide.
+            # An explicitly supplied executable is supported for local diagnostics.
+            binary=os.getenv('AUTOPILOT_CHROMIUM')
+            options={'headless':os.getenv('AUTOPILOT_HEADED')!='1',
+                'args':[f'--disable-extensions-except={ROOT}',f'--load-extension={ROOT}',
+                        '--no-sandbox','--disable-gpu','--disable-dev-shm-usage']}
+            if binary:
+                options['executable_path']=binary
+            else:
+                options['channel']='chromium'
+            ctx=await pw.chromium.launch_persistent_context(profile,**options)
             try:
-                sw=ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event('serviceworker',timeout=15000)
+                sw=ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event('serviceworker',timeout=20000)
                 eid=sw.url.split('/')[2]
                 await ctx.route('https://chatgpt.com/c/**',lambda route:route.fulfill(
                     status=200,content_type='text/html; charset=utf-8',body=HTML))
                 busy=await ctx.new_page();await busy.goto('https://chatgpt.com/c/busy')
                 good=await ctx.new_page();await good.goto('https://chatgpt.com/c/ready')
+                duplicate=await ctx.new_page();await duplicate.goto('https://chatgpt.com/c/ready')
                 await good.bring_to_front()
                 report=await ctx.new_page();await report.goto(f'chrome-extension://{eid}/report.html')
                 await good.bring_to_front()
@@ -67,22 +79,26 @@ async def main():
                 await good.wait_for_timeout(8500)
                 first=await good.evaluate("()=>({sends,clicks,ups,overlaps,busy})")
                 other=await busy.evaluate("()=>({sends,clicks,ups,overlaps,busy})")
-                print('at 8.5s ready tab:',first,'busy tab:',other)
+                shadow=await duplicate.evaluate("()=>({sends,clicks,ups,overlaps,busy})")
+                print('at 8.5s ready tab:',first,'busy tab:',other,'duplicate:',shadow)
                 assert first['sends']>=1, 'ready tab did not send'
                 assert first['clicks']>=1 and first['ups']>=1, 'no real mouse/Up sequence'
                 assert first['overlaps']==0
                 assert other['sends']==0, 'busy tab incorrectly sent'
+                assert shadow['sends']==0 and shadow['ups']==0, 'duplicate chat received keyboard input'
                 await good.wait_for_timeout(10500)
                 second=await busy.evaluate("()=>({sends,clicks,ups,overlaps,busy})")
                 print('at ~19s previously busy tab:', second)
                 assert second['sends']>=1, 'previously busy tab never resumed'
                 assert second['overlaps']==0
+                shadow=await duplicate.evaluate("()=>({sends,ups,overlaps})")
+                assert shadow['sends']==0 and shadow['ups']==0, 'duplicate became active during monitoring'
                 log=await report.evaluate("async()=>(await chrome.storage.local.get('autopilot5_logs')).autopilot5_logs||[]")
                 state=await report.evaluate("async()=>(await chrome.storage.local.get('autopilot5_state')).autopilot5_state")
                 print('last events:',json.dumps(log[-12:],ensure_ascii=False)[:2500])
                 print('state:',json.dumps(state,ensure_ascii=False)[:1400])
                 assert any(e['event']=='send_acknowledged' for e in log)
-                assert state['enabled']
+                assert state['enabled'] and len(state['tabIds'])>=3
                 await report.evaluate("async()=>await chrome.runtime.sendMessage({type:'AP5_TOGGLE'})")
                 print('BROWSER_SMOKE_PASS')
             finally:

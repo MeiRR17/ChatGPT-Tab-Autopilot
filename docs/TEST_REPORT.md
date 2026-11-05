@@ -1,3 +1,12 @@
+# v5.6.0 verification notes
+
+- Offline Node tests: 49/49 passed locally before commit; rerun in CI.
+- Local full-extension test: **blocked by managed Chromium policy** (`ExtensionInstallBlocklist: ["*"]`), not a definitive extension regression.
+- Added `Chrome Extension Integration` workflow to install Playwright's bundled Chromium in GitHub Actions. Status must be confirmed from the new commit's run; do not claim it has passed merely because the workflow exists.
+- Browser fixture: locally intercepted, synthetic chat pages; checks busy/ready/duplicate tab behaviors and native Chrome Debugger input.
+- Logged-in ChatGPT E2E: **not performed**. No real account secrets or chat text are used in CI.
+- Release remains experimental until installed extension CI and supervised live tests pass.
+
 # Test report — v5.5.0 (2026-11-05)
 
 - Node offline suite: **49/49 passed locally**.

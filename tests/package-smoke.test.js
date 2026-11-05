@@ -5,7 +5,7 @@ const ROOT=path.resolve(__dirname,'..');
 const manifest=JSON.parse(fs.readFileSync(path.join(ROOT,'manifest.json'),'utf8'));
 test('V5 scoped Chrome extension',()=>{
   assert.equal(manifest.manifest_version,3);
-  assert.equal(manifest.version,'5.5.0');
+  assert.equal(manifest.version,'5.6.0');
   assert.deepEqual(manifest.host_permissions,['https://chatgpt.com/*','https://chat.openai.com/*']);
   for(const f of ['background.js','content.js','core.js','report.html','report.css','report.js','report-utils.js'])
     assert.ok(fs.existsSync(path.join(ROOT,f)),f);
