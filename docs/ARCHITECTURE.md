@@ -38,3 +38,7 @@ ChatGPT's UI is not a stable documented API. Completion actions, editor markup, 
 ## Verification boundary
 
 The page's DOM can change between every check and every key event. There is no atomic server-side completion API exposed to this extension. The final page check reduces a known race but cannot eliminate that fundamental limitation. For unattended production-grade automation, use a supported API and explicit completion events rather than browser keystrokes.
+
+## Cross-tab completion claim (v5.5)
+
+Before interacting with a composer, the worker checks the lowest-ID live monitored tab for the conversation pathname. A second check happens just before Enter. The atomic storage mutation that enters `sending` also records `handledGlobally[conversation|userCount|assistantSignature]`. Other tabs cannot claim the same completion, even if the original tab has closed. A claim is removed only when the worker proves that Enter has **not** been attempted; an uncertain delivery stays claimed until the next explicit monitoring session. This is scoped to one extension session and Chrome window, not different profiles/devices.

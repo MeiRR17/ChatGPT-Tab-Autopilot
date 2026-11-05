@@ -1,7 +1,7 @@
 {
   "name": "chatgpt-tab-autopilot",
   "private": true,
-  "version": "5.4.0",
+  "version": "5.5.0",
   "description": "Local Chrome extension for monitored ChatGPT continuation and audit logs",
   "scripts": {
     "test": "node --test tests/*.test.js",

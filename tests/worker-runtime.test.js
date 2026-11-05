@@ -25,6 +25,10 @@ function harness(phase='watching',options={}){
       const result={};for(const k of (Array.isArray(key)?key:[key]))result[k]=writes[k];return result;
     },set:async values=>{Object.assign(writes,values)}}},
     tabs:{get:async()=>({id:7,url,windowId:2,discarded:false}),
+      query:async()=>[
+        ...(options.otherChatTab ? [{id:options.otherChatTab.id,url:options.otherChatTab.url,windowId:2,discarded:false}] : []),
+        {id:7,url,windowId:2,discarded:false}
+      ],
       sendMessage:async(id,msg)=>{
         switch(msg.type){
           case 'AP5_INSPECT':if(options.inspectionFailure)throw Error('No receiver');return {...OBS};
@@ -142,4 +146,58 @@ test('navigating away while awaiting an acknowledged reply remains retryable',as
   h.setUrl('https://chatgpt.com/c/one');
   await vm.runInContext('scanOne(7)',h.context);
   assert.equal(h.getItem().phase,'await_reply');
+});
+
+
+test('duplicate conversation is skipped before any mouse or keyboard input',async()=>{
+  const h=harness('preparing',{otherChatTab:{id:5,url:'https://chatgpt.com/c/one'}});
+  h.writes.autopilot5_state.tabIds.push(5);
+  const result=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
+  assert.equal(result.kind,'skip');
+  assert.match(result.reason,/Duplicate conversation/i);
+  assert.equal(h.commands.length,0);
+});
+test('lower-ID owner remains eligible when the same chat is open twice',async()=>{
+  const h=harness('preparing',{otherChatTab:{id:12,url:'https://chatgpt.com/c/one'}});
+  h.writes.autopilot5_state.tabIds.push(12);
+  const result=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
+  assert.equal(result.kind,'sent');
+  assert.equal(h.commands.filter(c=>c.args.key==='Enter' && c.args.type==='keyDown').length,1);
+});
+test('owner navigating to another conversation safely promotes the remaining tab',async()=>{
+  const h=harness('preparing',{otherChatTab:{id:5,url:'https://chatgpt.com/c/other'}});
+  h.writes.autopilot5_state.tabIds.push(5);
+  const result=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
+  assert.equal(result.kind,'sent');
+});
+test('a duplicate watching tab never clicks while the primary is alive',async()=>{
+  const h=harness('watching',{otherChatTab:{id:5,url:'https://chatgpt.com/c/one'}});
+  h.writes.autopilot5_state.tabIds.push(5);
+  await vm.runInContext('scanOne(7)',h.context);
+  assert.equal(h.getItem().phase,'watching');
+  assert.match(h.getItem().status,/Duplicate conversation/);
+  assert.equal(h.commands.length,0);
+});
+test('durable global completion claim blocks another copy after original tab closes',async()=>{
+  const h=harness('watching');
+  const key=`${OBS.conversationId}|${OBS.userCount}|${OBS.assistantSig}`;
+  h.writes.autopilot5_state.handledGlobally={[key]:{tabId:5,claimedAt:Date.now()}};
+  await vm.runInContext('scanOne(7)',h.context);
+  assert.equal(h.getItem().phase,'watching');
+  assert.match(h.getItem().status,/already handled/);
+  assert.equal(h.commands.length,0);
+});
+test('successful Enter persists one global completion claim',async()=>{
+  const h=harness('preparing');
+  const r=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
+  assert.equal(r.kind,'sent');
+  const key=`${OBS.conversationId}|${OBS.userCount}|${OBS.assistantSig}`;
+  assert.equal(h.writes.autopilot5_state.handledGlobally[key].tabId,7);
+});
+test('failed post-persistence gate rolls back global claim before any Enter',async()=>{
+  const h=harness('preparing',{failBeforeEnterAt:2});
+  const r=await vm.runInContext(`act(7,'unit-session',${JSON.stringify(OBS)})`,h.context);
+  assert.equal(r.kind,'skip');
+  assert.deepEqual(Object.keys(h.writes.autopilot5_state.handledGlobally||{}),[]);
+  assert.equal(h.commands.some(c=>c.args.key==='Enter'),false);
 });

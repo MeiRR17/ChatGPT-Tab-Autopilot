@@ -1,3 +1,13 @@
+# Test report — v5.5.0 (2026-11-05)
+
+- Node offline suite: **49/49 passed locally**.
+- JavaScript syntax check: passed.
+- Headless Chromium installed-extension smoke: **NOT VERIFIED** (service worker never registered; timed out after 15 seconds).
+- Authenticated ChatGPT E2E: **NOT PERFORMED**.
+- GitHub Actions: pending on new commit.
+- New coverage: duplicated chat tab owner selection, persistent per-completion guard across tab close, rollback when Enter was not attempted.
+- Never treat synthetic results as proof of production readiness.
+
 # Test report — v5.4.0 (2026-11-05)
 
 ## Results in this build container

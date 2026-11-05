@@ -1,3 +1,12 @@
+## [5.5.0] - 2026-11-05
+
+- Prevent two Chrome tabs showing the same ChatGPT conversation from independently sending continuations.
+- Keep duplicate tabs in the scan set: skip only the secondary input owner, without stopping global monitoring.
+- Revalidate ownership before mouse input and after the persistent pre-Enter claim.
+- Persist a per-conversation completion claim across tab closure, preventing a second copy from replaying a response; roll back only if Enter was never attempted.
+- Add seven regression tests for duplicate skip, owner selection, navigation, persisted claims and rollback.
+- Preserve fail-closed behavior: no Enter on ambiguous ownership.
+
 # Changelog
 
 ## 5.4.0 — safety recovery & CI (2026-11-05)
