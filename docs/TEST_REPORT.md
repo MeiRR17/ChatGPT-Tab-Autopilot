@@ -4,13 +4,17 @@
 
 | Verification | Status |
 | --- | --- |
-| `npm test` | **36/36 passed** (offline Node tests) |
+| `npm test` | **42/42 passed** (offline Node tests) |
 | `npm run check` | **Passed** (JavaScript syntax) |
 | Manifest V3 and package assertions | **Passed** (included in Node tests) |
 | Two separate background-tab CDP simulations | **Not re-run for this version**; older v5.3 smoke results remain historical only |
 | Installed-extension Chromium E2E | **NOT VERIFIED** (service worker not registered under headless; optional headed run also timed out) |
 | Authenticated ChatGPT E2E | **NOT PERFORMED** |
 | GitHub Actions workflow | **Added**; hosted CI result must be checked after pushing |
+
+## CI regression discovered and resolved
+
+The first v5.4 GitHub Actions run found six failing historical tests in `tests/core.test.js`, a file that existed on the GitHub branch but was missing from the previous local release ZIP. The old tests used the removed `Core.initial` API. They have been **rewritten against `newItem` and `decide`**, preserving all six regression cases. The complete tracked test suite now has 42 passing local tests. Await GitHub Actions to confirm the updated commit.
 
 ## New regression scenarios
 
